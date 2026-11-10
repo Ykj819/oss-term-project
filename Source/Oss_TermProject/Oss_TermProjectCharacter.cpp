@@ -26,6 +26,38 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Oss_TermProject.h"
+#include "EngineUtils.h"
+#include "InteractionComponent.h"
+#include "StatsComponent.h"
+#include "MeleeHitComponent.h"
+#include "Kismet/GameplayStatics.h"
+#include "Engine/Engine.h"
+#include "GameFramework/DamageType.h"
+#include "PlayerStatsOverlay.h"
+#include "Engine/GameViewportClient.h"
+#include "Components/CapsuleComponent.h"
+#include "Engine/World.h"
+
+namespace
+{
+	// turn the character toward the held movement input (relative to the camera); keeps the current facing if nothing is held
+	void FaceHeldInputDirection(ACharacter* Character, const FVector2D& MoveInput)
+	{
+		AController* Controller = Character ? Character->GetController() : nullptr;
+		if (!Controller || MoveInput.IsNearlyZero())
+		{
+			return;
+		}
+
+		const FRotationMatrix YawMatrix(FRotator(0.f, Controller->GetControlRotation().Yaw, 0.f));
+		FVector Dir = YawMatrix.GetUnitAxis(EAxis::X) * MoveInput.Y + YawMatrix.GetUnitAxis(EAxis::Y) * MoveInput.X;
+		Dir.Z = 0.f;
+		if (Dir.Normalize())
+		{
+			Character->SetActorRotation(Dir.Rotation());
+		}
+	}
+}
 
 AOss_TermProjectCharacter::AOss_TermProjectCharacter()
 {
@@ -38,11 +70,10 @@ AOss_TermProjectCharacter::AOss_TermProjectCharacter()
 	bUseControllerRotationRoll = false;
 
 	// Configure character movement
-	// Strafe movement: the character keeps facing the camera direction instead of turning toward the movement direction,
-	// so S walks backward and A/D sidestep (the anim blueprint picks the directional animations)
-	GetCharacterMovement()->bOrientRotationToMovement = false;
-	GetCharacterMovement()->bUseControllerDesiredRotation = true;
-	GetCharacterMovement()->RotationRate = FRotator(0.0f, 720.0f, 0.0f);
+	// Free camera: the character turns toward the direction it moves in; rotating the camera doesn't turn the character
+	GetCharacterMovement()->bOrientRotationToMovement = true;
+	GetCharacterMovement()->bUseControllerDesiredRotation = false;
+	GetCharacterMovement()->RotationRate = FRotator(0.0f, 500.0f, 0.0f);
 
 	// Note: For faster iteration times these variables, and many more, can be tweaked in the Character Blueprint
 	// instead of recompiling to adjust them
@@ -76,6 +107,43 @@ AOss_TermProjectCharacter::AOss_TermProjectCharacter()
 		StickMesh->SetStaticMesh(CylinderMesh.Object);
 	}
 
+	// Lock-on marker: small sphere placed in world space on the target's surface facing the camera
+	LockOnMarker = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("LockOnMarker"));
+	LockOnMarker->SetupAttachment(RootComponent);
+	LockOnMarker->SetUsingAbsoluteLocation(true);
+	LockOnMarker->SetUsingAbsoluteRotation(true);
+	LockOnMarker->SetUsingAbsoluteScale(true);
+	LockOnMarker->SetWorldScale3D(FVector(0.08f));
+	LockOnMarker->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	LockOnMarker->SetGenerateOverlapEvents(false);
+	LockOnMarker->SetCastShadow(false);
+	LockOnMarker->SetHiddenInGame(true);
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereMesh(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+	if (SphereMesh.Succeeded())
+	{
+		LockOnMarker->SetStaticMesh(SphereMesh.Object);
+	}
+
+	// Interaction (E)
+	Interaction = CreateDefaultSubobject<UInteractionComponent>(TEXT("Interaction"));
+
+	// Health / stamina
+	Stats = CreateDefaultSubobject<UStatsComponent>(TEXT("Stats"));
+
+	// Attack hit detection
+	MeleeHit = CreateDefaultSubobject<UMeleeHitComponent>(TEXT("MeleeHit"));
+
+	// Potion bottle: engine cylinder scaled down, placed in the right hand on BeginPlay, hidden until drinking
+	PotionMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PotionMesh"));
+	PotionMesh->SetupAttachment(GetMesh());
+	PotionMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	PotionMesh->SetGenerateOverlapEvents(false);
+	PotionMesh->SetHiddenInGame(true);
+	if (CylinderMesh.Succeeded())
+	{
+		PotionMesh->SetStaticMesh(CylinderMesh.Object);
+	}
+
 	// Stick combo: slash A (right-high -> left-low), slash B (left-low -> right-high), repeated
 	StickComboAnimations.Add(TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(TEXT("/Game/Characters/Mannequins/Anims/Stick/MM_Stick_Slash_A.MM_Stick_Slash_A"))));
 	StickComboAnimations.Add(TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(TEXT("/Game/Characters/Mannequins/Anims/Stick/MM_Stick_Slash_B.MM_Stick_Slash_B"))));
@@ -91,7 +159,47 @@ void AOss_TermProjectCharacter::BeginPlay()
 	Super::BeginPlay();
 
 	// apply the (possibly Blueprint-edited) walk speed
-	GetCharacterMovement()->MaxWalkSpeed = bIsSprinting ? SprintSpeed : WalkSpeed;
+	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+
+	Stats->OnDeath.AddDynamic(this, &AOss_TermProjectCharacter::HandleDeath);
+
+	// potion bottle in the right fist: upright along the knuckle line, like the stick grip
+	PotionCharges = MaxPotionCharges;
+	if (USkeletalMesh* SkelMesh = GetMesh()->GetSkeletalMeshAsset())
+	{
+		const FReferenceSkeleton& RefSkel = SkelMesh->GetRefSkeleton();
+		auto RefComponentSpace = [&RefSkel](FName Bone) -> FTransform
+		{
+			FTransform Result = FTransform::Identity;
+			for (int32 Index = RefSkel.FindBoneIndex(Bone); Index != INDEX_NONE; Index = RefSkel.GetParentIndex(Index))
+			{
+				Result = Result * RefSkel.GetRefBonePose()[Index];
+			}
+			return Result;
+		};
+
+		if (RefSkel.FindBoneIndex(TEXT("hand_r")) != INDEX_NONE && RefSkel.FindBoneIndex(TEXT("index_01_r")) != INDEX_NONE)
+		{
+			const FTransform Hand = RefComponentSpace(TEXT("hand_r"));
+			const FVector Axis = (RefComponentSpace(TEXT("index_01_r")).GetLocation() - RefComponentSpace(TEXT("pinky_01_r")).GetLocation()).GetSafeNormal();
+			const FVector Grip = FMath::Lerp(Hand.GetLocation(), RefComponentSpace(TEXT("middle_01_r")).GetLocation(), 0.6f);
+
+			// 6cm wide, 14cm tall bottle, sticking out 5cm more on the thumb side
+			const FTransform Bottle(FRotationMatrix::MakeFromZ(Axis).ToQuat(), Grip + Axis * 5.f, FVector(0.06f, 0.06f, 0.14f));
+			PotionMesh->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, TEXT("hand_r"));
+			PotionMesh->SetRelativeTransform(Bottle.GetRelativeTransform(Hand));
+		}
+	}
+	if (UMaterialInstanceDynamic* MID = PotionMesh->CreateDynamicMaterialInstance(0))
+	{
+		MID->SetVectorParameterValue(TEXT("Color"), PotionColor);
+	}
+
+	// lock-on marker color
+	if (UMaterialInstanceDynamic* MID = LockOnMarker->CreateDynamicMaterialInstance(0))
+	{
+		MID->SetVectorParameterValue(TEXT("Color"), FLinearColor(1.f, 0.85f, 0.3f));
+	}
 
 	// roll speed curve: full speed, then ease out at the end
 	RollStrengthCurve = NewObject<UCurveFloat>(this, TEXT("RollStrengthCurve"));
@@ -104,7 +212,7 @@ void AOss_TermProjectCharacter::BeginPlay()
 		UE_LOG(LogOss_TermProject, Warning, TEXT("'%s' Roll animation not found (%s). Rolling will move the character without an animation."), *GetNameSafe(this), *RollAnimation.ToString());
 	}
 
-	TArray<TSoftObjectPtr<UAnimSequenceBase>*> AttackAnims = { &LightAttackAnimation, &HeavyAttackAnimation, &StickHeavyAttackAnimation };
+	TArray<TSoftObjectPtr<UAnimSequenceBase>*> AttackAnims = { &LightAttackAnimation, &HeavyAttackAnimation, &StickHeavyAttackAnimation, &StickBlockAnimation, &PotionAnimation };
 	for (TSoftObjectPtr<UAnimSequenceBase>& Anim : StickComboAnimations)
 	{
 		AttackAnims.Add(&Anim);
@@ -235,6 +343,22 @@ void AOss_TermProjectCharacter::SetupPlayerInputComponent(UInputComponent* Playe
 		{
 			EquipStickAction = MakeRuntimeAction(TEXT("IA_EquipStick_Runtime"), EKeys::One);
 		}
+		if (!BlockAction)
+		{
+			BlockAction = MakeRuntimeAction(TEXT("IA_Block_Runtime"), EKeys::RightMouseButton);
+		}
+		if (!LockOnAction)
+		{
+			LockOnAction = MakeRuntimeAction(TEXT("IA_LockOn_Runtime"), EKeys::Q);
+		}
+		if (!InteractAction)
+		{
+			InteractAction = MakeRuntimeAction(TEXT("IA_Interact_Runtime"), EKeys::E);
+		}
+		if (!PotionAction)
+		{
+			PotionAction = MakeRuntimeAction(TEXT("IA_Potion_Runtime"), EKeys::R);
+		}
 
 		if (RuntimeInputMappingContext)
 		{
@@ -243,6 +367,24 @@ void AOss_TermProjectCharacter::SetupPlayerInputComponent(UInputComponent* Playe
 				if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer()))
 				{
 					Subsystem->AddMappingContext(RuntimeInputMappingContext, 0);
+				}
+			}
+		}
+
+		// temporary health / stamina bars for the local player
+		if (!StatsOverlay.IsValid())
+		{
+			if (APlayerController* PC = Cast<APlayerController>(GetController()))
+			{
+				ULocalPlayer* LocalPlayer = PC->GetLocalPlayer();
+				if (LocalPlayer && LocalPlayer->ViewportClient)
+				{
+					TWeakObjectPtr<AOss_TermProjectCharacter> WeakThis(this);
+					StatsOverlay = PlayerStatsOverlay::Create(Stats, TAttribute<FText>::CreateLambda([WeakThis]()
+					{
+						return WeakThis.IsValid() ? FText::FromString(FString::Printf(TEXT("Potion x%d  [R]"), WeakThis->GetPotionCharges())) : FText::GetEmpty();
+					}));
+					LocalPlayer->ViewportClient->AddViewportWidgetContent(StatsOverlay.ToSharedRef(), 10);
 				}
 			}
 		}
@@ -256,6 +398,20 @@ void AOss_TermProjectCharacter::SetupPlayerInputComponent(UInputComponent* Playe
 
 		// Equip / unequip the stick
 		EnhancedInputComponent->BindAction(EquipStickAction, ETriggerEvent::Started, this, &AOss_TermProjectCharacter::DoToggleStick);
+
+		// Blocking (held)
+		EnhancedInputComponent->BindAction(BlockAction, ETriggerEvent::Started, this, &AOss_TermProjectCharacter::DoBlockStart);
+		EnhancedInputComponent->BindAction(BlockAction, ETriggerEvent::Completed, this, &AOss_TermProjectCharacter::DoBlockEnd);
+		EnhancedInputComponent->BindAction(BlockAction, ETriggerEvent::Canceled, this, &AOss_TermProjectCharacter::DoBlockEnd);
+
+		// Lock-on
+		EnhancedInputComponent->BindAction(LockOnAction, ETriggerEvent::Started, this, &AOss_TermProjectCharacter::ToggleLockOn);
+
+		// Interacting
+		EnhancedInputComponent->BindAction(InteractAction, ETriggerEvent::Started, this, &AOss_TermProjectCharacter::DoInteract);
+
+		// Drinking a potion
+		EnhancedInputComponent->BindAction(PotionAction, ETriggerEvent::Started, this, &AOss_TermProjectCharacter::DoDrinkPotion);
 	}
 	else
 	{
@@ -291,8 +447,8 @@ void AOss_TermProjectCharacter::DoMove(float Right, float Forward)
 	// remember the held direction so a roll can use it
 	CachedMoveInput = FVector2D(Right, Forward);
 
-	// no steering while rolling or attacking
-	if (bIsRolling || bIsAttacking)
+	// no steering while rolling, attacking or blocking
+	if (bIsRolling || bIsAttacking || bIsBlocking || bIsStaggered)
 	{
 		return;
 	}
@@ -317,6 +473,20 @@ void AOss_TermProjectCharacter::DoMove(float Right, float Forward)
 
 void AOss_TermProjectCharacter::DoLook(float Yaw, float Pitch)
 {
+	// the camera follows the target while locked on; a quick sideways flick switches to the next target on that side
+	if (LockOnTarget)
+	{
+		LockOnSwitchInput += Yaw;
+		const float Now = GetWorld()->GetTimeSeconds();
+		if (FMath::Abs(LockOnSwitchInput) >= LockOnSwitchThreshold && Now - LastLockOnSwitchTime >= LockOnSwitchCooldown)
+		{
+			SwitchLockOnTarget(LockOnSwitchInput);
+			LockOnSwitchInput = 0.f;
+			LastLockOnSwitchTime = Now;
+		}
+		return;
+	}
+
 	if (GetController() != nullptr)
 	{
 		// add yaw and pitch input to controller
@@ -346,7 +516,7 @@ void AOss_TermProjectCharacter::DoJumpEnd()
 void AOss_TermProjectCharacter::DoRoll()
 {
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
-	if (bIsRolling || bIsAttacking || !Movement->IsMovingOnGround())
+	if (bIsRolling || bIsAttacking || bIsBlocking || bIsStaggered || bIsDrinking || !Movement->IsMovingOnGround() || !Stats->ConsumeStamina(RollStaminaCost))
 	{
 		return;
 	}
@@ -366,10 +536,11 @@ void AOss_TermProjectCharacter::DoRoll()
 	}
 
 	bIsRolling = true;
+	RollStartTime = GetWorld()->GetTimeSeconds();
 
-	// face the roll direction instantly and stop turning toward the camera until the roll ends
+	// face the roll direction instantly and don't turn until the roll ends
 	SetActorRotation(RollDir.Rotation());
-	Movement->bUseControllerDesiredRotation = false;
+	UpdateRotationMode();
 
 	// play the roll animation on the anim blueprint's slot
 	float RollDuration = FallbackRollDuration;
@@ -404,7 +575,7 @@ void AOss_TermProjectCharacter::DoRoll()
 void AOss_TermProjectCharacter::EndRoll()
 {
 	bIsRolling = false;
-	GetCharacterMovement()->bUseControllerDesiredRotation = true;
+	UpdateRotationMode();
 }
 
 void AOss_TermProjectCharacter::AttackPressed(const FInputActionValue& Value)
@@ -429,12 +600,12 @@ void AOss_TermProjectCharacter::DoLightAttack()
 		return;
 	}
 
-	PlayAttack(LightAttackAnimation);
+	PlayAttack(LightAttackAnimation, LightAttackStaminaCost, UnarmedLightDamage, UnarmedLightHitWindow, false);
 }
 
 void AOss_TermProjectCharacter::StickAttack()
 {
-	if (bIsRolling || !GetCharacterMovement()->IsMovingOnGround())
+	if (bIsRolling || bIsBlocking || bIsStaggered || bIsDrinking || !GetCharacterMovement()->IsMovingOnGround())
 	{
 		return;
 	}
@@ -465,7 +636,7 @@ bool AOss_TermProjectCharacter::PlayStickSlash(int32 ComboIndex, bool bChained)
 
 	UAnimSequenceBase* Anim = StickComboAnimations.IsValidIndex(ComboIndex) ? StickComboAnimations[ComboIndex].Get() : nullptr;
 	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
-	if (!Anim || !AnimInstance)
+	if (!Anim || !AnimInstance || !Stats->HasStamina())
 	{
 		return false;
 	}
@@ -480,6 +651,9 @@ bool AOss_TermProjectCharacter::PlayStickSlash(int32 ComboIndex, bool bChained)
 		return false;
 	}
 
+	Stats->ConsumeStamina(LightAttackStaminaCost);
+	ScheduleHitWindow(StickSlashHitWindow, Length, StartTime, PlayRate, StickLightDamage, true);
+
 	// same forward travel as the unarmed attack
 	SetAnimRootMotionTranslationScale(StickComboRootMotionScales.IsValidIndex(ComboIndex) ? StickComboRootMotionScales[ComboIndex] : 1.f);
 
@@ -492,13 +666,12 @@ bool AOss_TermProjectCharacter::PlayStickSlash(int32 ComboIndex, bool bChained)
 	CurrentStickAttackLength = Length;
 	NextStickComboIndex = (ComboIndex + 1) % StickComboAnimations.Num();
 
-	// the first slash faces where the camera is looking; chained slashes keep that facing
-	// (snapping to the camera mid-combo spins the character while the camera is lagging behind)
-	if (!bChained && GetController())
+	// the first slash faces the target / held movement direction (or keeps the current facing); chained slashes keep that facing
+	if (!bChained)
 	{
-		SetActorRotation(FRotator(0.f, GetController()->GetControlRotation().Yaw, 0.f));
+		FaceActionDirection();
 	}
-	GetCharacterMovement()->bUseControllerDesiredRotation = false;
+	UpdateRotationMode();
 	BeginAttackCamera();
 
 	// timers in real time (animation time / play rate)
@@ -520,7 +693,7 @@ void AOss_TermProjectCharacter::DoHeavyAttack()
 	// holding the stick: overhead smash instead of the charged punch
 	if (bStickEquipped && !StickHeavyAttackAnimation.IsNull())
 	{
-		if (PlayAttack(StickHeavyAttackAnimation, StickHeavyPlayRate * StickHeavySpeedMultiplier, StickHeavyRootMotionScale))
+		if (PlayAttack(StickHeavyAttackAnimation, HeavyAttackStaminaCost, StickHeavyDamage, StickHeavyHitWindow, true, StickHeavyPlayRate * StickHeavySpeedMultiplier, StickHeavyRootMotionScale))
 		{
 			// a heavy attack ends the slash combo
 			NextStickComboIndex = 0;
@@ -529,13 +702,68 @@ void AOss_TermProjectCharacter::DoHeavyAttack()
 		return;
 	}
 
-	PlayAttack(HeavyAttackAnimation);
+	PlayAttack(HeavyAttackAnimation, HeavyAttackStaminaCost, UnarmedHeavyDamage, UnarmedHeavyHitWindow, false);
 }
 
-bool AOss_TermProjectCharacter::PlayAttack(const TSoftObjectPtr<UAnimSequenceBase>& Animation, float PlayRate, float RootMotionScale)
+void AOss_TermProjectCharacter::ScheduleHitWindow(FVector2D Window, float AnimLength, float StartTime, float PlayRate, float Damage, bool bStick)
+{
+	CancelHitWindow();
+
+	TArray<FMeleeHitShape> Shapes;
+	if (bStick)
+	{
+		// the whole stick: engine cylinder is 100cm long along Z, the component's scale stretches it to StickLength
+		FMeleeHitShape Shape;
+		Shape.Component = StickMesh;
+		Shape.Start = FVector(0.f, 0.f, -50.f);
+		Shape.End = FVector(0.f, 0.f, 50.f);
+		Shape.Radius = StickHitRadius;
+		Shapes.Add(Shape);
+	}
+	else
+	{
+		for (const TCHAR* Bone : { TEXT("hand_r"), TEXT("hand_l") })
+		{
+			FMeleeHitShape Shape;
+			Shape.Component = GetMesh();
+			Shape.Socket = Bone;
+			Shape.Radius = FistHitRadius;
+			Shapes.Add(Shape);
+		}
+	}
+
+	// animation time -> real time
+	PlayRate = FMath::Max(PlayRate, 0.05f);
+	const float OpenDelay = (Window.X * AnimLength - StartTime) / PlayRate;
+	const float CloseDelay = (Window.Y * AnimLength - StartTime) / PlayRate;
+	if (CloseDelay <= 0.f)
+	{
+		return;
+	}
+
+	auto Open = [this, Shapes, Damage]() { MeleeHit->BeginHitWindow(Shapes, Damage); };
+	if (OpenDelay <= 0.f)
+	{
+		Open();
+	}
+	else
+	{
+		GetWorldTimerManager().SetTimer(HitWindowStartTimer, FTimerDelegate::CreateWeakLambda(this, Open), OpenDelay, false);
+	}
+	GetWorldTimerManager().SetTimer(HitWindowEndTimer, FTimerDelegate::CreateWeakLambda(this, [this]() { MeleeHit->EndHitWindow(); }), CloseDelay, false);
+}
+
+void AOss_TermProjectCharacter::CancelHitWindow()
+{
+	GetWorldTimerManager().ClearTimer(HitWindowStartTimer);
+	GetWorldTimerManager().ClearTimer(HitWindowEndTimer);
+	MeleeHit->EndHitWindow();
+}
+
+bool AOss_TermProjectCharacter::PlayAttack(const TSoftObjectPtr<UAnimSequenceBase>& Animation, float StaminaCost, float Damage, FVector2D HitWindow, bool bStick, float PlayRate, float RootMotionScale)
 {
 	PlayRate = FMath::Max(PlayRate, 0.05f);
-	if (bIsAttacking || bIsRolling || !GetCharacterMovement()->IsMovingOnGround())
+	if (bIsAttacking || bIsRolling || bIsBlocking || bIsStaggered || bIsDrinking || !GetCharacterMovement()->IsMovingOnGround() || !Stats->HasStamina())
 	{
 		return false;
 	}
@@ -553,16 +781,16 @@ bool AOss_TermProjectCharacter::PlayAttack(const TSoftObjectPtr<UAnimSequenceBas
 		return false;
 	}
 
+	Stats->ConsumeStamina(StaminaCost);
+	ScheduleHitWindow(HitWindow, Anim->GetPlayLength(), 0.f, PlayRate, Damage, bStick);
+
 	bIsAttacking = true;
 	bIsStickAttack = false;
 	SetAnimRootMotionTranslationScale(RootMotionScale);
 
-	// attack where the camera is looking, then keep that facing until the attack ends
-	if (GetController())
-	{
-		SetActorRotation(FRotator(0.f, GetController()->GetControlRotation().Yaw, 0.f));
-	}
-	GetCharacterMovement()->bUseControllerDesiredRotation = false;
+	// attack toward the target / held movement direction (or the current facing), then keep that facing until the attack ends
+	FaceActionDirection();
+	UpdateRotationMode();
 	BeginAttackCamera();
 
 	GetWorldTimerManager().SetTimer(AttackEndTimer, this, &AOss_TermProjectCharacter::EndAttack, FMath::Max(Anim->GetPlayLength() / PlayRate - BlendOut, 0.1f), false);
@@ -583,15 +811,13 @@ void AOss_TermProjectCharacter::EndAttack()
 		SetAnimRootMotionTranslationScale(1.f);
 	}
 
+	CancelHitWindow();
 	bIsAttacking = false;
 	bIsStickAttack = false;
 	bStickComboQueued = false;
 
-	// resume turning toward the camera
-	if (!bIsRolling)
-	{
-		GetCharacterMovement()->bUseControllerDesiredRotation = true;
-	}
+	// resume normal turning
+	UpdateRotationMode();
 
 	EndAttackCamera();
 }
@@ -626,8 +852,15 @@ void AOss_TermProjectCharacter::ResetAttackCamera()
 
 void AOss_TermProjectCharacter::DoToggleStick()
 {
+	// no weapon swaps while drinking or staggered
+	if (bIsDrinking || bIsStaggered)
+	{
+		return;
+	}
+
 	if (bStickEquipped)
 	{
+		StopBlocking();
 		bStickEquipped = false;
 		StickMesh->SetHiddenInGame(true);
 		return;
@@ -679,14 +912,529 @@ void AOss_TermProjectCharacter::DoToggleStick()
 	bStickEquipped = true;
 }
 
+void AOss_TermProjectCharacter::DoInteract()
+{
+	if (IsBusy() || bIsDrinking || !GetCharacterMovement()->IsMovingOnGround())
+	{
+		return;
+	}
+
+	Interaction->TryInteract();
+}
+
+void AOss_TermProjectCharacter::DoDrinkPotion()
+{
+	if (bIsDrinking || IsBusy() || PotionCharges <= 0 || Stats->IsDead() || !GetCharacterMovement()->IsMovingOnGround())
+	{
+		return;
+	}
+
+	// upper-body animation: the legs keep walking (needs the PotionSlotName slot behind a Layered blend per bone in the anim blueprint)
+	float Duration = FallbackPotionDuration;
+	const float BlendOut = 0.2f;
+	UAnimSequenceBase* Anim = PotionAnimation.Get();
+	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
+	if (Anim && AnimInstance && AnimInstance->PlaySlotAnimationAsDynamicMontage(Anim, PotionSlotName, 0.15f, BlendOut))
+	{
+		Duration = Anim->GetPlayLength();
+	}
+
+	--PotionCharges;
+	bIsDrinking = true;
+
+	// weapon away, bottle in hand
+	StickMesh->SetHiddenInGame(true);
+	PotionMesh->SetHiddenInGame(false);
+	UpdateRotationMode();
+
+	GetWorldTimerManager().SetTimer(PotionHealTimer, this, &AOss_TermProjectCharacter::ApplyPotionHeal, FMath::Max(Duration * PotionHealFraction, 0.05f), false);
+	GetWorldTimerManager().SetTimer(PotionEndTimer, this, &AOss_TermProjectCharacter::EndDrinkPotion, FMath::Max(Duration - BlendOut, 0.1f), false);
+}
+
+void AOss_TermProjectCharacter::ApplyPotionHeal()
+{
+	Stats->Heal(PotionHealAmount);
+}
+
+void AOss_TermProjectCharacter::EndDrinkPotion()
+{
+	bIsDrinking = false;
+	PotionMesh->SetHiddenInGame(true);
+	StickMesh->SetHiddenInGame(!bStickEquipped);
+	UpdateRotationMode();
+}
+
+void AOss_TermProjectCharacter::DoBlockStart()
+{
+	bBlockHeld = true;
+
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (!bStickEquipped || bIsBlocking || bIsRolling || bIsAttacking || bIsStaggered || bIsDrinking || !Movement->IsMovingOnGround())
+	{
+		return;
+	}
+
+	UAnimSequenceBase* Anim = StickBlockAnimation.Get();
+	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
+	if (!Anim || !AnimInstance)
+	{
+		return;
+	}
+
+	// the animation is a held pose: the blend-in raises the stick, looping keeps it up while the button is held
+	if (!AnimInstance->PlaySlotAnimationAsDynamicMontage(Anim, AttackSlotName, BlockRaiseTime, BlockLowerTime, 1.f, 100000))
+	{
+		return;
+	}
+
+	bIsBlocking = true;
+	BlockStartTime = GetWorld()->GetTimeSeconds();
+
+	// block toward the target / held movement direction (or the current facing) and stand still while blocking
+	FaceActionDirection();
+	UpdateRotationMode();
+	Movement->StopMovementImmediately();
+}
+
+void AOss_TermProjectCharacter::DoBlockEnd()
+{
+	bBlockHeld = false;
+
+	// frozen after a block: the guard stays up until the stagger ends
+	if (!bIsStaggered)
+	{
+		StopBlocking();
+	}
+}
+
+void AOss_TermProjectCharacter::StopBlocking()
+{
+	if (!bIsBlocking)
+	{
+		return;
+	}
+
+	bIsBlocking = false;
+
+	if (UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr)
+	{
+		AnimInstance->StopSlotAnimation(BlockLowerTime, AttackSlotName);
+	}
+
+	UpdateRotationMode();
+}
+
 void AOss_TermProjectCharacter::DoSprintStart()
 {
 	bIsSprinting = true;
-	GetCharacterMovement()->MaxWalkSpeed = SprintSpeed;
+	bSprintExhausted = false;
+	UpdateRotationMode();
 }
 
 void AOss_TermProjectCharacter::DoSprintEnd()
 {
 	bIsSprinting = false;
-	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+	bSprintExhausted = false;
+	UpdateRotationMode();
+}
+
+bool AOss_TermProjectCharacter::IsSprintActive() const
+{
+	return bIsSprinting && !bSprintExhausted && !bIsDrinking && Stats->HasStamina();
+}
+
+float AOss_TermProjectCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
+{
+	const float Damage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	if (Damage <= 0.f || Stats->IsDead())
+	{
+		return 0.f;
+	}
+
+	// rolling through the hit
+	if (IsInvincible())
+	{
+		ShowCombatText(TEXT("DODGE"), FColor::Cyan);
+		return 0.f;
+	}
+
+	// guarding against a hit from the front
+	if (bIsBlocking && IsInFront(DamageCauser))
+	{
+		// guard raised just before the hit: nothing lost, no stagger
+		if (GetWorld()->GetTimeSeconds() - BlockStartTime <= PerfectBlockWindow)
+		{
+			ShowCombatText(TEXT("PERFECT BLOCK"), FColor::Yellow);
+			return 0.f;
+		}
+
+		// normal block: stamina instead of health, then a short freeze. Not enough stamina: the guard breaks
+		const float StaminaCost = Damage * BlockStaminaPerDamage;
+		const bool bGuardBreak = Stats->GetStamina() < StaminaCost;
+		Stats->ConsumeStamina(StaminaCost);
+
+		if (bGuardBreak)
+		{
+			ShowCombatText(TEXT("GUARD BREAK"), FColor::Red);
+			bBlockHeld = false;
+			StopBlocking();
+			StartStagger(GuardBreakStaggerTime);
+		}
+		else
+		{
+			ShowCombatText(TEXT("BLOCK"), FColor::White);
+			StartStagger(BlockStaggerTime);
+		}
+		return 0.f;
+	}
+
+	return Stats->ApplyDamage(Damage, DamageCauser);
+}
+
+bool AOss_TermProjectCharacter::IsInvincible() const
+{
+	if (!bIsRolling)
+	{
+		return false;
+	}
+
+	const float T = GetWorld()->GetTimeSeconds() - RollStartTime;
+	return T >= RollInvincibleStart && T <= RollInvincibleStart + RollInvincibleDuration;
+}
+
+bool AOss_TermProjectCharacter::IsInFront(const AActor* DamageCauser) const
+{
+	if (!DamageCauser)
+	{
+		return true;
+	}
+
+	FVector ToCauser = DamageCauser->GetActorLocation() - GetActorLocation();
+	ToCauser.Z = 0.f;
+	if (!ToCauser.Normalize())
+	{
+		return true;
+	}
+
+	return FVector::DotProduct(GetActorForwardVector(), ToCauser) >= FMath::Cos(FMath::DegreesToRadians(BlockAngle));
+}
+
+void AOss_TermProjectCharacter::StartStagger(float Duration)
+{
+	bIsStaggered = true;
+	GetCharacterMovement()->StopMovementImmediately();
+	UpdateRotationMode();
+	GetWorldTimerManager().SetTimer(StaggerTimer, this, &AOss_TermProjectCharacter::EndStagger, FMath::Max(Duration, 0.01f), false);
+}
+
+void AOss_TermProjectCharacter::EndStagger()
+{
+	bIsStaggered = false;
+
+	// the block button was released while frozen
+	if (bIsBlocking && !bBlockHeld)
+	{
+		StopBlocking();
+	}
+
+	UpdateRotationMode();
+}
+
+void AOss_TermProjectCharacter::ShowCombatText(const FString& Text, const FColor& Color) const
+{
+	if (bShowCombatDebugText && GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 1.2f, Color, Text, true, FVector2D(2.f, 2.f));
+	}
+	UE_LOG(LogOss_TermProject, Log, TEXT("'%s' %s"), *GetNameSafe(this), *Text);
+}
+
+void AOss_TermProjectCharacter::HandleDeath(AActor* DamageCauser)
+{
+	// stop everything
+	GetWorldTimerManager().ClearTimer(StaggerTimer);
+	bIsStaggered = false;
+	bBlockHeld = false;
+	StopBlocking();
+	ClearLockOn();
+	GetWorldTimerManager().ClearTimer(RollEndTimer);
+	GetWorldTimerManager().ClearTimer(AttackEndTimer);
+	GetWorldTimerManager().ClearTimer(StickComboChainTimer);
+	CancelHitWindow();
+	GetWorldTimerManager().ClearTimer(PotionHealTimer);
+	GetWorldTimerManager().ClearTimer(PotionEndTimer);
+	bIsRolling = bIsAttacking = bIsSprinting = bIsDrinking = false;
+	Interaction->SetInteractionEnabled(false);
+
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		DisableInput(PC);
+	}
+
+	// collapse as a ragdoll (respawning comes with the checkpoint system)
+	GetCharacterMovement()->DisableMovement();
+	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	GetMesh()->SetCollisionProfileName(TEXT("Ragdoll"));
+	GetMesh()->SetSimulatePhysics(true);
+
+	UE_LOG(LogOss_TermProject, Log, TEXT("'%s' died (killed by %s)"), *GetNameSafe(this), *GetNameSafe(DamageCauser));
+}
+
+void AOss_TermProjectCharacter::DebugDamage(float Amount)
+{
+	UGameplayStatics::ApplyDamage(this, Amount, GetController(), nullptr, UDamageType::StaticClass());
+}
+
+void AOss_TermProjectCharacter::DebugRestore()
+{
+	Stats->RestoreAll();
+	RefillPotions();
+}
+
+void AOss_TermProjectCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (StatsOverlay.IsValid())
+	{
+		if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+		{
+			Viewport->RemoveViewportWidgetContent(StatsOverlay.ToSharedRef());
+		}
+		StatsOverlay.Reset();
+	}
+
+	Super::EndPlay(EndPlayReason);
+}
+
+void AOss_TermProjectCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	// running uses stamina; running out drops to walking until the sprint key is pressed again
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	const bool bWasSprintActive = IsSprintActive();
+	if (bWasSprintActive && Movement->IsMovingOnGround() && Movement->Velocity.Size2D() > 10.f && !IsBusy())
+	{
+		Stats->DrainStamina(SprintStaminaPerSecond, DeltaSeconds);
+		if (!Stats->HasStamina())
+		{
+			bSprintExhausted = true;
+		}
+	}
+	Movement->MaxWalkSpeed = bIsDrinking ? PotionWalkSpeed : (IsSprintActive() ? SprintSpeed : WalkSpeed);
+	if (bWasSprintActive != IsSprintActive())
+	{
+		UpdateRotationMode();
+	}
+
+	if (!LockOnTarget)
+	{
+		return;
+	}
+
+	// drop the lock if the target is gone or too far
+	if (!IsValid(LockOnTarget) || LockOnTarget->IsHidden() || !LockOnTarget->ActorHasTag(LockOnTag) || FVector::Dist(GetActorLocation(), LockOnTarget->GetActorLocation()) > LockOnBreakDistance)
+	{
+		ClearLockOn();
+		return;
+	}
+
+	// sideways input fades out quickly: slow mouse drift never adds up to a switch
+	LockOnSwitchInput = FMath::FInterpTo(LockOnSwitchInput, 0.f, DeltaSeconds, 10.f);
+
+	float TargetRadius = 0.f;
+	const FVector TargetPoint = GetLockOnPoint(LockOnTarget, &TargetRadius);
+
+	// camera: turn toward the target, looking a bit down so the character stays in view
+	if (AController* PC = GetController())
+	{
+		const FVector ViewOrigin = GetActorLocation() + FVector(0.f, 0.f, BaseEyeHeight);
+		FRotator Desired = (TargetPoint - ViewOrigin).Rotation();
+		Desired.Pitch = FMath::Clamp(Desired.Pitch + LockOnPitchOffset, -60.f, 30.f);
+		Desired.Roll = 0.f;
+		PC->SetControlRotation(FMath::RInterpTo(PC->GetControlRotation(), Desired, DeltaSeconds, LockOnCameraSpeed));
+	}
+
+	// character: keep facing the target while walking or blocking (sprinting turns toward the movement direction; rolls and attacks keep their facing)
+	if (!bIsRolling && !bIsAttacking && !IsSprintActive())
+	{
+		FVector ToTarget = TargetPoint - GetActorLocation();
+		ToTarget.Z = 0.f;
+		if (!ToTarget.IsNearlyZero())
+		{
+			SetActorRotation(FMath::RInterpTo(GetActorRotation(), ToTarget.Rotation(), DeltaSeconds, LockOnTurnSpeed));
+		}
+	}
+
+	// marker on the target's surface, on the side facing the camera
+	const FVector CameraLocation = FollowCamera->GetComponentLocation();
+	LockOnMarker->SetWorldLocation(TargetPoint + (CameraLocation - TargetPoint).GetSafeNormal() * (TargetRadius + 5.f));
+}
+
+void AOss_TermProjectCharacter::ToggleLockOn()
+{
+	if (LockOnTarget)
+	{
+		ClearLockOn();
+		return;
+	}
+
+	LockOnTarget = FindLockOnTarget();
+	if (LockOnTarget)
+	{
+		LockOnSwitchInput = 0.f;
+		LockOnMarker->SetHiddenInGame(false);
+		UpdateRotationMode();
+	}
+}
+
+bool AOss_TermProjectCharacter::IsValidLockOnCandidate(AActor* Candidate, float Range) const
+{
+	if (!IsValid(Candidate) || Candidate == this || !Candidate->ActorHasTag(LockOnTag) || Candidate->IsHidden())
+	{
+		return false;
+	}
+
+	const FVector Point = GetLockOnPoint(Candidate);
+	if (FVector::Dist(GetActorLocation(), Point) > Range)
+	{
+		return false;
+	}
+
+	// must be visible from the camera
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(LockOnSight), false, this);
+	FHitResult Hit;
+	return !GetWorld()->LineTraceSingleByChannel(Hit, FollowCamera->GetComponentLocation(), Point, ECC_Visibility, Params) || Hit.GetActor() == Candidate;
+}
+
+void AOss_TermProjectCharacter::SwitchLockOnTarget(float Direction)
+{
+	if (!LockOnTarget || FMath::IsNearlyZero(Direction))
+	{
+		return;
+	}
+
+	const FVector ViewLocation = FollowCamera->GetComponentLocation();
+	const FVector ViewForward = FollowCamera->GetForwardVector();
+	const FVector ViewRight = FollowCamera->GetRightVector();
+
+	// horizontal screen angle of a point relative to the view direction (negative = left, positive = right)
+	auto ScreenAngle = [&](const FVector& Point)
+	{
+		const FVector ToPoint = Point - ViewLocation;
+		return FMath::RadiansToDegrees(FMath::Atan2(FVector::DotProduct(ToPoint, ViewRight), FVector::DotProduct(ToPoint, ViewForward)));
+	};
+
+	const float CurrentAngle = ScreenAngle(GetLockOnPoint(LockOnTarget));
+	const float Side = FMath::Sign(Direction);
+
+	AActor* Best = nullptr;
+	float BestDelta = TNumericLimits<float>::Max();
+
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		AActor* Candidate = *It;
+		if (Candidate == LockOnTarget || !IsValidLockOnCandidate(Candidate, LockOnRange))
+		{
+			continue;
+		}
+
+		const FVector Point = GetLockOnPoint(Candidate);
+		if (FVector::DotProduct(Point - ViewLocation, ViewForward) <= 0.f)
+		{
+			continue; // behind the camera
+		}
+
+		// the nearest target on the flicked side
+		const float Delta = (ScreenAngle(Point) - CurrentAngle) * Side;
+		if (Delta > 0.5f && Delta < BestDelta)
+		{
+			BestDelta = Delta;
+			Best = Candidate;
+		}
+	}
+
+	if (Best)
+	{
+		LockOnTarget = Best;
+	}
+}
+
+void AOss_TermProjectCharacter::ClearLockOn()
+{
+	LockOnTarget = nullptr;
+	LockOnMarker->SetHiddenInGame(true);
+	UpdateRotationMode();
+}
+
+AActor* AOss_TermProjectCharacter::FindLockOnTarget() const
+{
+	const FVector ViewLocation = FollowCamera->GetComponentLocation();
+	const FVector ViewDir = FollowCamera->GetForwardVector();
+	const float MinDot = FMath::Cos(FMath::DegreesToRadians(LockOnMaxAngle));
+
+	AActor* Best = nullptr;
+	float BestScore = TNumericLimits<float>::Max();
+
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		AActor* Candidate = *It;
+		if (!IsValidLockOnCandidate(Candidate, LockOnRange))
+		{
+			continue;
+		}
+
+		const FVector Point = GetLockOnPoint(Candidate);
+		const FVector ToPoint = (Point - ViewLocation).GetSafeNormal();
+		const float Dot = FVector::DotProduct(ViewDir, ToPoint);
+		if (Dot < MinDot)
+		{
+			continue;
+		}
+
+		// prefer the target closest to the center of the view, then the closer one
+		const float Score = (1.f - Dot) * 10000.f + FVector::Dist(GetActorLocation(), Point);
+		if (Score < BestScore)
+		{
+			BestScore = Score;
+			Best = Candidate;
+		}
+	}
+
+	return Best;
+}
+
+FVector AOss_TermProjectCharacter::GetLockOnPoint(const AActor* Target, float* OutRadius) const
+{
+	FVector Origin, Extent;
+	Target->GetActorBounds(true, Origin, Extent);
+	if (OutRadius)
+	{
+		*OutRadius = FMath::Min3(Extent.X, Extent.Y, Extent.Z);
+	}
+	return Origin;
+}
+
+void AOss_TermProjectCharacter::UpdateRotationMode()
+{
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	Movement->bUseControllerDesiredRotation = false;
+
+	// locked on (and not sprinting): Tick faces the target, so walking strafes around it
+	Movement->bOrientRotationToMovement = !IsBusy() && !(LockOnTarget && !IsSprintActive());
+}
+
+void AOss_TermProjectCharacter::FaceActionDirection()
+{
+	if (LockOnTarget)
+	{
+		FVector ToTarget = GetLockOnPoint(LockOnTarget) - GetActorLocation();
+		ToTarget.Z = 0.f;
+		if (!ToTarget.IsNearlyZero())
+		{
+			SetActorRotation(ToTarget.Rotation());
+			return;
+		}
+	}
+
+	FaceHeldInputDirection(this, CachedMoveInput);
 }
