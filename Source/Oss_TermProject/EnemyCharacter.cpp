@@ -18,6 +18,9 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
+#include "EngineUtils.h"
+#include "Oss_TermProjectCharacter.h"
+#include "WolfBoss.h"
 
 namespace
 {
@@ -101,6 +104,12 @@ void AEnemyCharacter::BeginPlay()
 	GetCharacterMovement()->MaxWalkSpeed = ChaseSpeed;
 	Stats->OnDeath.AddDynamic(this, &AEnemyCharacter::HandleDeath);
 
+	// remembered for ResetEnemy
+	HomeTransform = GetActorTransform();
+	MeshRelativeTransform = GetMesh()->GetRelativeTransform();
+	MeshCollisionProfile = GetMesh()->GetCollisionProfileName();
+	CapsuleCollision = GetCapsuleComponent()->GetCollisionEnabled();
+
 	for (TSoftObjectPtr<UAnimSequenceBase>& Anim : AttackAnimations)
 	{
 		Anim.LoadSynchronous();
@@ -130,6 +139,15 @@ APawn* AEnemyCharacter::GetPlayer() const
 	if (const UStatsComponent* PlayerStats = Player->FindComponentByClass<UStatsComponent>())
 	{
 		if (PlayerStats->IsDead())
+		{
+			return nullptr;
+		}
+	}
+
+	// leave the player alone while they sit at a bonfire
+	if (const AOss_TermProjectCharacter* PlayerCharacter = Cast<AOss_TermProjectCharacter>(Player))
+	{
+		if (PlayerCharacter->IsResting())
 		{
 			return nullptr;
 		}
@@ -356,6 +374,12 @@ void AEnemyCharacter::HandleDeath(AActor* DamageCauser)
 {
 	State = EEnemyState::Dead;
 	CancelAttack();
+
+	// souls straight to the player
+	if (AOss_TermProjectCharacter* Player = Cast<AOss_TermProjectCharacter>(UGameplayStatics::GetPlayerPawn(this, 0)))
+	{
+		Player->AddSouls(SoulReward);
+	}
 	GetWorldTimerManager().ClearTimer(StaggerTimer);
 
 	// no longer a target
@@ -365,6 +389,7 @@ void AEnemyCharacter::HandleDeath(AActor* DamageCauser)
 
 	if (AController* AI = GetController())
 	{
+		SavedController = AI;
 		AI->UnPossess();
 	}
 
@@ -375,7 +400,84 @@ void AEnemyCharacter::HandleDeath(AActor* DamageCauser)
 	GetMesh()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	GetMesh()->SetSimulatePhysics(true);
 
-	SetLifeSpan(CorpseLifeSpan);
+	// kept (hidden) instead of destroyed, so a bonfire rest can bring it back
+	GetWorldTimerManager().SetTimer(CorpseTimer, this, &AEnemyCharacter::HideCorpse, FMath::Max(CorpseLifeSpan, 0.1f), false);
+}
+
+void AEnemyCharacter::HideCorpse()
+{
+	GetMesh()->SetSimulatePhysics(false);
+	GetMesh()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	SetActorHiddenInGame(true);
+}
+
+void AEnemyCharacter::ResetEnemy()
+{
+	FTimerManager& Timers = GetWorldTimerManager();
+	CancelAttack();
+	Timers.ClearTimer(StaggerTimer);
+	Timers.ClearTimer(CorpseTimer);
+
+	// un-ragdoll: physics off, mesh back under the capsule
+	USkeletalMeshComponent* SkelMesh = GetMesh();
+	SkelMesh->SetSimulatePhysics(false);
+	SkelMesh->SetAllBodiesSimulatePhysics(false);
+	SkelMesh->AttachToComponent(GetCapsuleComponent(), FAttachmentTransformRules::KeepRelativeTransform);
+	SkelMesh->SetRelativeTransform(MeshRelativeTransform);
+	SkelMesh->SetCollisionProfileName(MeshCollisionProfile);
+	SkelMesh->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+	if (UAnimInstance* AnimInstance = SkelMesh->GetAnimInstance())
+	{
+		AnimInstance->StopAllMontages(0.f);
+	}
+	GetCapsuleComponent()->SetCollisionEnabled(CapsuleCollision);
+	SetActorHiddenInGame(false);
+
+	// home
+	TeleportTo(HomeTransform.GetLocation(), HomeTransform.Rotator(), false, true);
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	Movement->StopMovementImmediately();
+	Movement->SetMovementMode(MOVE_Walking);
+	Movement->bOrientRotationToMovement = true;
+	Movement->MaxWalkSpeed = ChaseSpeed;
+
+	// alive and unaware again
+	Stats->RestoreAll();
+	State = EEnemyState::Idle;
+	NextAttackTime = 0.f;
+	Tags.AddUnique(TEXT("LockOnTarget"));
+
+	if (!GetController())
+	{
+		if (SavedController)
+		{
+			SavedController->Possess(this);
+		}
+		else
+		{
+			SpawnDefaultController();
+		}
+	}
+}
+
+void AEnemyCharacter::ResetAllEnemies(const UObject* WorldContext)
+{
+	UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
+	if (!World)
+	{
+		return;
+	}
+
+	for (TActorIterator<AEnemyCharacter> It(World); It; ++It)
+	{
+		It->ResetEnemy();
+	}
+
+	// bosses go back to their arena and heal (unless already defeated)
+	for (TActorIterator<AWolfBoss> It(World); It; ++It)
+	{
+		It->ResetBoss();
+	}
 }
 
 void AEnemyCharacter::UpdateHealthBar()

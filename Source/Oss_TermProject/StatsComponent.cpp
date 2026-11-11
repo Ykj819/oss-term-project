@@ -67,6 +67,26 @@ void UStatsComponent::RestoreAll()
 	SetStamina(MaxStamina);
 }
 
+void UStatsComponent::SetMaxHealth(float NewMax)
+{
+	NewMax = FMath::Max(NewMax, 1.f);
+	if (!bIsDead)
+	{
+		Health = FMath::Clamp(Health + (NewMax - MaxHealth), 1.f, NewMax);
+	}
+	MaxHealth = NewMax;
+	OnHealthChanged.Broadcast(Health, MaxHealth);
+}
+
+void UStatsComponent::SetMaxStamina(float NewMax)
+{
+	NewMax = FMath::Max(NewMax, 1.f);
+	const float NewStamina = FMath::Clamp(Stamina + (NewMax - MaxStamina), 0.f, NewMax);
+	MaxStamina = NewMax;
+	Stamina = -1.f; // force the broadcast
+	SetStamina(NewStamina);
+}
+
 bool UStatsComponent::ConsumeStamina(float Amount)
 {
 	if (!HasStamina())

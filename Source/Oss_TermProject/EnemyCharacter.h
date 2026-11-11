@@ -50,6 +50,13 @@ public:
 	UFUNCTION(BlueprintPure, Category="Enemy")
 	EEnemyState GetState() const { return State; }
 
+	/** Back to its starting spot with full health (revives it if dead) */
+	UFUNCTION(BlueprintCallable, Category="Enemy")
+	void ResetEnemy();
+
+	/** Resets every enemy in the world (resting at a bonfire, player respawn) */
+	static void ResetAllEnemies(const UObject* WorldContext);
+
 protected:
 
 	virtual void BeginPlay() override;
@@ -130,9 +137,13 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Enemy|Hit", meta = (ClampMin = 0, Units = "s"))
 	float HitStaggerTime = 0.5f;
 
-	/** The body stays this long after death */
+	/** The body stays this long after death, then disappears until the next bonfire rest / respawn */
 	UPROPERTY(EditAnywhere, Category="Enemy|Hit", meta = (ClampMin = 0, Units = "s"))
 	float CorpseLifeSpan = 6.f;
+
+	/** Souls the player gets for killing it */
+	UPROPERTY(EditAnywhere, Category="Enemy|Souls", meta = (ClampMin = 0))
+	int32 SoulReward = 10;
 
 	/** Health bar size / height above the actor origin */
 	UPROPERTY(EditAnywhere, Category="Enemy|Health Bar")
@@ -154,7 +165,21 @@ protected:
 	FTimerHandle HitWindowStartTimer;
 	FTimerHandle HitWindowEndTimer;
 	FTimerHandle StaggerTimer;
+	FTimerHandle CorpseTimer;
 
+	/** Starting setup, restored by ResetEnemy */
+	FTransform HomeTransform;
+	FTransform MeshRelativeTransform;
+	FName MeshCollisionProfile;
+	ECollisionEnabled::Type CapsuleCollision = ECollisionEnabled::QueryAndPhysics;
+
+	/** AI controller kept across death so it can possess the revived body */
+	UPROPERTY(Transient)
+	TObjectPtr<AController> SavedController;
+
+	void HideCorpse();
+
+	/** The player, or null if dead / resting at a bonfire / not damageable */
 	APawn* GetPlayer() const;
 
 	bool CanSee(const APawn* Player) const;

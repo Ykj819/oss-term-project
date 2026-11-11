@@ -9,6 +9,7 @@ class UStatsComponent;
 
 namespace PlayerStatsOverlay
 {
-	/** Top-left health (red) and stamina (green) bars that read their values from Stats every frame, plus a line of text below (potions). Bar length follows the max value */
-	TSharedRef<SWidget> Create(UStatsComponent* Stats, TAttribute<FText> InfoText = TAttribute<FText>());
+	/** Top-left health (red) and stamina (green) bars that read their values from Stats every frame, plus a line of text below (potions). Bar length follows the max value.
+	 *  SoulsText is shown in the bottom-right corner */
+	TSharedRef<SWidget> Create(UStatsComponent* Stats, TAttribute<FText> InfoText = TAttribute<FText>(), TAttribute<FText> SoulsText = TAttribute<FText>());
 }

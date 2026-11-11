@@ -55,11 +55,39 @@ namespace
 	}
 }
 
-TSharedRef<SWidget> PlayerStatsOverlay::Create(UStatsComponent* Stats, TAttribute<FText> InfoText)
+TSharedRef<SWidget> PlayerStatsOverlay::Create(UStatsComponent* Stats, TAttribute<FText> InfoText, TAttribute<FText> SoulsText)
 {
 	TWeakObjectPtr<UStatsComponent> WeakStats(Stats);
+	const FSlateBrush* White = FCoreStyle::Get().GetBrush("WhiteBrush");
 
-	return SNew(SBox)
+	return SNew(SOverlay)
+	// bottom-right: souls
+	+ SOverlay::Slot()
+	.HAlign(HAlign_Right)
+	.VAlign(VAlign_Bottom)
+	.Padding(FMargin(40.f, 40.f))
+	[
+		SNew(SOverlay)
+		+ SOverlay::Slot()
+		[
+			SNew(SImage).Image(White).ColorAndOpacity(FLinearColor(0.f, 0.f, 0.f, 0.55f))
+		]
+		+ SOverlay::Slot()
+		.Padding(FMargin(18.f, 8.f))
+		[
+			SNew(STextBlock)
+			.Text(SoulsText)
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 20))
+			.ColorAndOpacity(FLinearColor(0.95f, 0.9f, 0.75f))
+			.ShadowOffset(FVector2D(1.f, 1.f))
+		]
+	]
+	// top-left: bars and potions
+	+ SOverlay::Slot()
+	.HAlign(HAlign_Left)
+	.VAlign(VAlign_Top)
+	[
+	SNew(SBox)
 		.HAlign(HAlign_Left)
 		.VAlign(VAlign_Top)
 		.Padding(FMargin(40.f, 40.f))
@@ -86,5 +114,6 @@ TSharedRef<SWidget> PlayerStatsOverlay::Create(UStatsComponent* Stats, TAttribut
 				.ColorAndOpacity(FLinearColor::White)
 				.ShadowOffset(FVector2D(1.f, 1.f))
 			]
-		];
+		]
+	];
 }

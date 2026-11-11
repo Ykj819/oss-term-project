@@ -40,6 +40,14 @@ public:
 	UFUNCTION(BlueprintPure, Category="Stats|Health")
 	float GetMaxHealth() const { return MaxHealth; }
 
+	/** Changes max health (leveling up); current health moves by the same amount */
+	UFUNCTION(BlueprintCallable, Category="Stats|Health")
+	void SetMaxHealth(float NewMax);
+
+	/** Changes max stamina (leveling up); current stamina moves by the same amount */
+	UFUNCTION(BlueprintCallable, Category="Stats|Stamina")
+	void SetMaxStamina(float NewMax);
+
 	UFUNCTION(BlueprintPure, Category="Stats|Health")
 	bool IsDead() const { return bIsDead; }
 

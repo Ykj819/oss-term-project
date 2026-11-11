@@ -14,6 +14,15 @@ struct FInputActionValue;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
 
+/** Stats raised with souls (level up at the FireGirl) */
+UENUM(BlueprintType)
+enum class ELevelStat : uint8
+{
+	Vigor,		// max health
+	Endurance,	// max stamina
+	Strength	// attack damage
+};
+
 /**
  *  A simple player-controllable third person character
  *  Implements a controllable orbiting camera
@@ -440,6 +449,22 @@ protected:
 	/** Freezes the character (no moving, no actions) */
 	void StartStagger(float Duration);
 
+	// ---- Getting hit (same as the enemies) ----
+
+	/** Flinch animation when taking damage */
+	UPROPERTY(EditAnywhere, Category="Hit")
+	TSoftObjectPtr<UAnimSequenceBase> HitReactAnimation = TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(TEXT("/Game/Characters/Mannequins/Anims/Rifle/HitReact/MM_HitReact_Front_Lgt_01.MM_HitReact_Front_Lgt_01")));
+
+	/** How long a hit freezes the player (every action is cancelled) */
+	UPROPERTY(EditAnywhere, Category="Hit", meta = (ClampMin = 0, Units = "s"))
+	float HitStaggerTime = 0.5f;
+
+	/** Interrupts everything in progress: roll, attack / combo, block, potion */
+	void CancelAllActions();
+
+	/** Took damage: cancel everything, turn toward the attacker, flinch */
+	void PlayHitReaction(AActor* DamageCauser);
+
 	void EndStagger();
 
 	/** True if DamageCauser is in front of the character (within BlockAngle) */
@@ -564,8 +589,106 @@ protected:
 	/** Center of the target used for aiming the camera */
 	FVector GetLockOnPoint(const AActor* Target, float* OutRadius = nullptr) const;
 
-	/** True while rolling, attacking, blocking or staggered */
-	bool IsBusy() const { return bIsRolling || bIsAttacking || bIsBlocking || bIsStaggered; }
+	/** True while rolling, attacking, blocking, staggered, resting at a bonfire or in the level-up menu */
+	bool IsBusy() const { return bIsRolling || bIsAttacking || bIsBlocking || bIsStaggered || bIsResting || bInLevelUpMenu; }
+
+	// ---- Bonfire / respawn ----
+
+	/** Sitting at a bonfire: can't act or be attacked; moving or E stands up */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Bonfire")
+	bool bIsResting = false;
+
+	/** Bonfire the player respawns at (last one rested at; null = the level start) */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Bonfire")
+	TObjectPtr<class ABonfire> LastBonfire;
+
+	/** Time between dying and coming back */
+	UPROPERTY(EditAnywhere, Category="Bonfire", meta = (ClampMin = 0, Units = "s"))
+	float RespawnDelay = 4.f;
+
+	FTimerHandle RespawnTimer;
+
+	/** Kneeling down at the bonfire (one knee on the ground) */
+	UPROPERTY(EditAnywhere, Category="Bonfire")
+	TSoftObjectPtr<UAnimSequenceBase> RestDownAnimation = TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(TEXT("/Game/Characters/Mannequins/Anims/Unarmed/MM_Kneel_Down.MM_Kneel_Down")));
+
+	/** Looping while kneeling */
+	UPROPERTY(EditAnywhere, Category="Bonfire")
+	TSoftObjectPtr<UAnimSequenceBase> RestIdleAnimation = TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(TEXT("/Game/Characters/Mannequins/Anims/Unarmed/MM_Kneel_Idle.MM_Kneel_Idle")));
+
+	/** Getting back up */
+	UPROPERTY(EditAnywhere, Category="Bonfire")
+	TSoftObjectPtr<UAnimSequenceBase> RestUpAnimation = TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(TEXT("/Game/Characters/Mannequins/Anims/Unarmed/MM_Kneel_Up.MM_Kneel_Up")));
+
+	/** Full-body slot for the rest animations (legs included) */
+	UPROPERTY(EditAnywhere, Category="Bonfire")
+	FName RestSlotName = TEXT("DefaultSlot");
+
+	/** Souls carried */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Souls")
+	int32 Souls = 0;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Level")
+	int32 VigorLevel = 1;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Level")
+	int32 EnduranceLevel = 1;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Level")
+	int32 StrengthLevel = 1;
+
+	/** Level-up cost = this x current player level */
+	UPROPERTY(EditAnywhere, Category="Level", meta = (ClampMin = 1))
+	int32 LevelCostPerLevel = 10;
+
+	/** Max health per Vigor point */
+	UPROPERTY(EditAnywhere, Category="Level", meta = (ClampMin = 0))
+	float HealthPerVigor = 10.f;
+
+	/** Max stamina per Endurance point */
+	UPROPERTY(EditAnywhere, Category="Level", meta = (ClampMin = 0))
+	float StaminaPerEndurance = 10.f;
+
+	/** Extra damage per Strength point */
+	UPROPERTY(EditAnywhere, Category="Level", meta = (ClampMin = 0, Units = "Percent"))
+	float DamagePercentPerStrength = 10.f;
+
+	/** Max health / stamina at level 1 */
+	float BaseMaxHealth = 100.f;
+	float BaseMaxStamina = 100.f;
+
+	bool bInLevelUpMenu = false;
+
+	TSharedPtr<class SWidget> LevelUpMenu;
+
+	/** Souls dropped at the last death (picked up by walking over them; lost if dying again first) */
+	UPROPERTY(Transient)
+	TObjectPtr<class ASoulDrop> DroppedSouls;
+
+	/** Getting up: still counts as resting until the animation ends */
+	bool bIsStandingUp = false;
+
+	FTimerHandle RestAnimTimer;
+
+	/** Plays a rest animation on RestSlotName; returns its length (0 if it couldn't play) */
+	float PlayRestAnimation(const TSoftObjectPtr<UAnimSequenceBase>& Animation, float BlendIn, float BlendOut, int32 LoopCount = 1);
+
+	/** Kneel-down animation finished: loop the kneeling pose */
+	void PlayRestIdle();
+
+	/** Stand-up animation finished: free to act, weapon back */
+	void FinishStandingUp();
+
+	/** Where the player first spawned (respawn point before any bonfire was used) */
+	FTransform StartTransform;
+
+	/** Mesh setup before ragdolling, restored on respawn */
+	FTransform MeshRelativeTransform;
+	FName MeshCollisionProfile;
+	ECollisionEnabled::Type CapsuleCollision = ECollisionEnabled::QueryAndPhysics;
+
+	/** Back to life at the last bonfire (or the start), enemies reset */
+	void Respawn();
 
 	/** Sets how the character turns: toward the movement direction normally, toward the target while locked on (unless sprinting), not at all while busy */
 	void UpdateRotationMode();
@@ -593,6 +716,54 @@ public:
 
 	/** Returns the stats component */
 	FORCEINLINE class UStatsComponent* GetStats() const { return Stats; }
+
+	// ---- Souls (currency) ----
+
+	/** Adds (or with a negative amount, spends) souls */
+	UFUNCTION(BlueprintCallable, Category="Souls")
+	void AddSouls(int32 Amount);
+
+	UFUNCTION(BlueprintPure, Category="Souls")
+	int32 GetSouls() const { return Souls; }
+
+	// ---- Leveling (temporary numbers) ----
+
+	/** Player level: 1 + every point spent */
+	UFUNCTION(BlueprintPure, Category="Level")
+	int32 GetPlayerLevel() const { return 1 + (VigorLevel - 1) + (EnduranceLevel - 1) + (StrengthLevel - 1); }
+
+	UFUNCTION(BlueprintPure, Category="Level")
+	int32 GetStatLevel(ELevelStat Stat) const;
+
+	/** Souls needed for the next level */
+	UFUNCTION(BlueprintPure, Category="Level")
+	int32 GetLevelUpCost() const { return LevelCostPerLevel * GetPlayerLevel(); }
+
+	/** Spends souls to raise Stat by one; false if not enough souls */
+	UFUNCTION(BlueprintCallable, Category="Level")
+	bool LevelUp(ELevelStat Stat);
+
+	/** Damage multiplier from Strength */
+	UFUNCTION(BlueprintPure, Category="Level")
+	float GetDamageMultiplier() const { return 1.f + (StrengthLevel - 1) * DamagePercentPerStrength / 100.f; }
+
+	/** Opens / closes the level-up menu (talking to the FireGirl) */
+	void OpenLevelUpMenu(AActor* Npc);
+	void CloseLevelUpMenu();
+
+	UFUNCTION(BlueprintPure, Category="Level")
+	bool IsInLevelUpMenu() const { return bInLevelUpMenu; }
+
+	/** Sits at the bonfire: full health, stamina and potions, enemies reset, becomes the respawn point */
+	UFUNCTION(BlueprintCallable, Category="Bonfire")
+	void StartResting(class ABonfire* Bonfire);
+
+	/** Stands up from the bonfire */
+	UFUNCTION(BlueprintCallable, Category="Bonfire")
+	void StopResting();
+
+	UFUNCTION(BlueprintPure, Category="Bonfire")
+	bool IsResting() const { return bIsResting; }
 
 	/** Console (`): DebugDamage 20 */
 	UFUNCTION(Exec)

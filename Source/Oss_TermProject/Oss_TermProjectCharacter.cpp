@@ -37,6 +37,10 @@
 #include "Engine/GameViewportClient.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
+#include "Bonfire.h"
+#include "SoulDrop.h"
+#include "LevelUpMenuWidget.h"
+#include "EnemyCharacter.h"
 
 namespace
 {
@@ -162,6 +166,16 @@ void AOss_TermProjectCharacter::BeginPlay()
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 
 	Stats->OnDeath.AddDynamic(this, &AOss_TermProjectCharacter::HandleDeath);
+
+	// remembered for respawning
+	StartTransform = GetActorTransform();
+	MeshRelativeTransform = GetMesh()->GetRelativeTransform();
+	MeshCollisionProfile = GetMesh()->GetCollisionProfileName();
+	CapsuleCollision = GetCapsuleComponent()->GetCollisionEnabled();
+
+	// level 1 values (leveling adds on top)
+	BaseMaxHealth = Stats->GetMaxHealth();
+	BaseMaxStamina = Stats->GetMaxStamina();
 
 	// potion bottle in the right fist: upright along the knuckle line, like the stick grip
 	PotionCharges = MaxPotionCharges;
@@ -383,6 +397,9 @@ void AOss_TermProjectCharacter::SetupPlayerInputComponent(UInputComponent* Playe
 					StatsOverlay = PlayerStatsOverlay::Create(Stats, TAttribute<FText>::CreateLambda([WeakThis]()
 					{
 						return WeakThis.IsValid() ? FText::FromString(FString::Printf(TEXT("Potion x%d  [R]"), WeakThis->GetPotionCharges())) : FText::GetEmpty();
+					}), TAttribute<FText>::CreateLambda([WeakThis]()
+					{
+						return WeakThis.IsValid() ? FText::FromString(FString::Printf(TEXT("Souls  %d"), WeakThis->GetSouls())) : FText::GetEmpty();
 					}));
 					LocalPlayer->ViewportClient->AddViewportWidgetContent(StatsOverlay.ToSharedRef(), 10);
 				}
@@ -444,6 +461,12 @@ void AOss_TermProjectCharacter::Look(const FInputActionValue& Value)
 
 void AOss_TermProjectCharacter::DoMove(float Right, float Forward)
 {
+	// no moving while resting at a bonfire (only E gets up) or in the level-up menu
+	if (bIsResting || bInLevelUpMenu)
+	{
+		return;
+	}
+
 	// remember the held direction so a roll can use it
 	CachedMoveInput = FVector2D(Right, Forward);
 
@@ -473,6 +496,12 @@ void AOss_TermProjectCharacter::DoMove(float Right, float Forward)
 
 void AOss_TermProjectCharacter::DoLook(float Yaw, float Pitch)
 {
+	// the mouse is for the menu
+	if (bInLevelUpMenu)
+	{
+		return;
+	}
+
 	// the camera follows the target while locked on; a quick sideways flick switches to the next target on that side
 	if (LockOnTarget)
 	{
@@ -516,7 +545,7 @@ void AOss_TermProjectCharacter::DoJumpEnd()
 void AOss_TermProjectCharacter::DoRoll()
 {
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
-	if (bIsRolling || bIsAttacking || bIsBlocking || bIsStaggered || bIsDrinking || !Movement->IsMovingOnGround() || !Stats->ConsumeStamina(RollStaminaCost))
+	if (bIsResting || bInLevelUpMenu || bIsRolling || bIsAttacking || bIsBlocking || bIsStaggered || bIsDrinking || !Movement->IsMovingOnGround() || !Stats->ConsumeStamina(RollStaminaCost))
 	{
 		return;
 	}
@@ -580,6 +609,11 @@ void AOss_TermProjectCharacter::EndRoll()
 
 void AOss_TermProjectCharacter::AttackPressed(const FInputActionValue& Value)
 {
+	if (bIsResting || bInLevelUpMenu)
+	{
+		return;
+	}
+
 	// Shift (sprint key) held -> heavy attack
 	if (bIsSprinting)
 	{
@@ -708,6 +742,9 @@ void AOss_TermProjectCharacter::DoHeavyAttack()
 void AOss_TermProjectCharacter::ScheduleHitWindow(FVector2D Window, float AnimLength, float StartTime, float PlayRate, float Damage, bool bStick)
 {
 	CancelHitWindow();
+
+	// Strength
+	Damage *= GetDamageMultiplier();
 
 	TArray<FMeleeHitShape> Shapes;
 	if (bStick)
@@ -852,8 +889,8 @@ void AOss_TermProjectCharacter::ResetAttackCamera()
 
 void AOss_TermProjectCharacter::DoToggleStick()
 {
-	// no weapon swaps while drinking or staggered
-	if (bIsDrinking || bIsStaggered)
+	// no weapon swaps while drinking, staggered or resting
+	if (bIsDrinking || bIsStaggered || bIsResting || bInLevelUpMenu)
 	{
 		return;
 	}
@@ -914,6 +951,20 @@ void AOss_TermProjectCharacter::DoToggleStick()
 
 void AOss_TermProjectCharacter::DoInteract()
 {
+	// E again at the bonfire: stand up
+	if (bIsResting)
+	{
+		StopResting();
+		return;
+	}
+
+	// E in the level-up menu: close it
+	if (bInLevelUpMenu)
+	{
+		CloseLevelUpMenu();
+		return;
+	}
+
 	if (IsBusy() || bIsDrinking || !GetCharacterMovement()->IsMovingOnGround())
 	{
 		return;
@@ -969,7 +1020,7 @@ void AOss_TermProjectCharacter::DoBlockStart()
 	bBlockHeld = true;
 
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
-	if (!bStickEquipped || bIsBlocking || bIsRolling || bIsAttacking || bIsStaggered || bIsDrinking || !Movement->IsMovingOnGround())
+	if (!bStickEquipped || bIsResting || bInLevelUpMenu || bIsBlocking || bIsRolling || bIsAttacking || bIsStaggered || bIsDrinking || !Movement->IsMovingOnGround())
 	{
 		return;
 	}
@@ -1046,7 +1097,7 @@ bool AOss_TermProjectCharacter::IsSprintActive() const
 float AOss_TermProjectCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
 	const float Damage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	if (Damage <= 0.f || Stats->IsDead())
+	if (Damage <= 0.f || Stats->IsDead() || bIsResting)
 	{
 		return 0.f;
 	}
@@ -1088,7 +1139,85 @@ float AOss_TermProjectCharacter::TakeDamage(float DamageAmount, FDamageEvent con
 		return 0.f;
 	}
 
-	return Stats->ApplyDamage(Damage, DamageCauser);
+	const float Taken = Stats->ApplyDamage(Damage, DamageCauser);
+	if (Taken > 0.f && !Stats->IsDead())
+	{
+		PlayHitReaction(DamageCauser);
+	}
+	return Taken;
+}
+
+void AOss_TermProjectCharacter::CancelAllActions()
+{
+	FTimerManager& Timers = GetWorldTimerManager();
+
+	// a hit (or death) closes the level-up menu
+	CloseLevelUpMenu();
+
+	// roll (and its push)
+	Timers.ClearTimer(RollEndTimer);
+	if (bIsRolling)
+	{
+		GetCharacterMovement()->RemoveRootMotionSourceByID(RollRootMotionID);
+		bIsRolling = false;
+	}
+
+	// attack / combo
+	Timers.ClearTimer(AttackEndTimer);
+	Timers.ClearTimer(StickComboChainTimer);
+	CancelHitWindow();
+	if (bIsAttacking)
+	{
+		bIsAttacking = false;
+		bIsStickAttack = false;
+		bStickComboQueued = false;
+		NextStickComboIndex = 0;
+		LastStickAttackEndTime = -1000.f;
+		SetAnimRootMotionTranslationScale(1.f);
+		EndAttackCamera();
+	}
+
+	// guard (the button has to be pressed again)
+	StopBlocking();
+
+	// potion: interrupted before the heal = the charge is lost
+	Timers.ClearTimer(PotionHealTimer);
+	Timers.ClearTimer(PotionEndTimer);
+	if (bIsDrinking)
+	{
+		EndDrinkPotion();
+	}
+
+	if (UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr)
+	{
+		AnimInstance->StopAllMontages(0.1f);
+	}
+}
+
+void AOss_TermProjectCharacter::PlayHitReaction(AActor* DamageCauser)
+{
+	CancelAllActions();
+
+	// turn toward the attacker (the flinch animation is a hit from the front)
+	if (DamageCauser)
+	{
+		FVector Dir = DamageCauser->GetActorLocation() - GetActorLocation();
+		Dir.Z = 0.f;
+		if (!Dir.IsNearlyZero())
+		{
+			SetActorRotation(Dir.Rotation());
+		}
+	}
+
+	if (UAnimSequenceBase* Anim = HitReactAnimation.LoadSynchronous())
+	{
+		if (UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr)
+		{
+			AnimInstance->PlaySlotAnimationAsDynamicMontage(Anim, AttackSlotName, 0.05f, 0.2f);
+		}
+	}
+
+	StartStagger(HitStaggerTime);
 }
 
 bool AOss_TermProjectCharacter::IsInvincible() const
@@ -1152,6 +1281,7 @@ void AOss_TermProjectCharacter::ShowCombatText(const FString& Text, const FColor
 void AOss_TermProjectCharacter::HandleDeath(AActor* DamageCauser)
 {
 	// stop everything
+	CloseLevelUpMenu();
 	GetWorldTimerManager().ClearTimer(StaggerTimer);
 	bIsStaggered = false;
 	bBlockHeld = false;
@@ -1171,13 +1301,294 @@ void AOss_TermProjectCharacter::HandleDeath(AActor* DamageCauser)
 		DisableInput(PC);
 	}
 
-	// collapse as a ragdoll (respawning comes with the checkpoint system)
+	// collapse as a ragdoll
 	GetCharacterMovement()->DisableMovement();
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	GetMesh()->SetCollisionProfileName(TEXT("Ragdoll"));
 	GetMesh()->SetSimulatePhysics(true);
 
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, RespawnDelay, FColor::Red, TEXT("YOU DIED"), true, FVector2D(4.f, 4.f));
+	}
+
+	// souls stay where we fell; souls still lying there from the previous death are lost
+	if (DroppedSouls)
+	{
+		DroppedSouls->Destroy();
+		DroppedSouls = nullptr;
+	}
+	if (Souls > 0)
+	{
+		DroppedSouls = ASoulDrop::SpawnAt(this, GetActorLocation(), Souls);
+		Souls = 0;
+	}
+
+	// back at the last bonfire after a moment
+	GetWorldTimerManager().SetTimer(RespawnTimer, this, &AOss_TermProjectCharacter::Respawn, FMath::Max(RespawnDelay, 0.1f), false);
+
 	UE_LOG(LogOss_TermProject, Log, TEXT("'%s' died (killed by %s)"), *GetNameSafe(this), *GetNameSafe(DamageCauser));
+}
+
+void AOss_TermProjectCharacter::Respawn()
+{
+	// move to the bonfire (or where the level started) FIRST, while collision is still off:
+	// turning collision back on at the death spot would instantly pick up the souls dropped there
+	const FTransform Target = LastBonfire ? LastBonfire->GetRespawnTransform() : StartTransform;
+	const FRotator Facing(0.f, Target.Rotator().Yaw, 0.f);
+	TeleportTo(Target.GetLocation(), Facing);
+
+	// alive before collision comes back, so souls dropped right next to the respawn spot still count
+	Stats->RestoreAll();
+
+	// un-ragdoll: physics off, mesh back under the capsule
+	USkeletalMeshComponent* SkelMesh = GetMesh();
+	SkelMesh->SetSimulatePhysics(false);
+	SkelMesh->SetAllBodiesSimulatePhysics(false);
+	SkelMesh->AttachToComponent(GetCapsuleComponent(), FAttachmentTransformRules::KeepRelativeTransform);
+	SkelMesh->SetRelativeTransform(MeshRelativeTransform);
+	SkelMesh->SetCollisionProfileName(MeshCollisionProfile);
+	if (UAnimInstance* AnimInstance = SkelMesh->GetAnimInstance())
+	{
+		AnimInstance->StopAllMontages(0.f);
+	}
+	GetCapsuleComponent()->SetCollisionEnabled(CapsuleCollision);
+
+	if (AController* PC = GetController())
+	{
+		PC->SetControlRotation(Facing);
+	}
+
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	Movement->StopMovementImmediately();
+	Movement->SetMovementMode(MOVE_Walking);
+
+	// fresh state
+	Stats->RestoreAll();
+	RefillPotions();
+	GetWorldTimerManager().ClearTimer(RestAnimTimer);
+	bIsResting = false;
+	bIsStandingUp = false;
+	bSprintExhausted = false;
+	CachedMoveInput = FVector2D::ZeroVector;
+	PotionMesh->SetHiddenInGame(true);
+	StickMesh->SetHiddenInGame(!bStickEquipped);
+	ResetAttackCamera();
+	UpdateRotationMode();
+
+	Interaction->SetInteractionEnabled(true);
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		EnableInput(PC);
+	}
+
+	// the world comes back too
+	AEnemyCharacter::ResetAllEnemies(this);
+
+	UE_LOG(LogOss_TermProject, Log, TEXT("'%s' respawned at %s"), *GetNameSafe(this), LastBonfire ? *GetNameSafe(LastBonfire) : TEXT("the start"));
+}
+
+void AOss_TermProjectCharacter::AddSouls(int32 Amount)
+{
+	Souls = FMath::Max(Souls + Amount, 0);
+}
+
+int32 AOss_TermProjectCharacter::GetStatLevel(ELevelStat Stat) const
+{
+	switch (Stat)
+	{
+	case ELevelStat::Vigor:		return VigorLevel;
+	case ELevelStat::Endurance:	return EnduranceLevel;
+	case ELevelStat::Strength:	return StrengthLevel;
+	default:					return 1;
+	}
+}
+
+bool AOss_TermProjectCharacter::LevelUp(ELevelStat Stat)
+{
+	const int32 Cost = GetLevelUpCost();
+	if (Souls < Cost || Stats->IsDead())
+	{
+		return false;
+	}
+
+	Souls -= Cost;
+	switch (Stat)
+	{
+	case ELevelStat::Vigor:
+		++VigorLevel;
+		Stats->SetMaxHealth(BaseMaxHealth + (VigorLevel - 1) * HealthPerVigor);
+		break;
+	case ELevelStat::Endurance:
+		++EnduranceLevel;
+		Stats->SetMaxStamina(BaseMaxStamina + (EnduranceLevel - 1) * StaminaPerEndurance);
+		break;
+	case ELevelStat::Strength:
+		++StrengthLevel;
+		break;
+	}
+
+	UE_LOG(LogOss_TermProject, Log, TEXT("'%s' leveled up to %d (cost %d souls)"), *GetNameSafe(this), GetPlayerLevel(), Cost);
+	return true;
+}
+
+void AOss_TermProjectCharacter::OpenLevelUpMenu(AActor* Npc)
+{
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PC ? PC->GetLocalPlayer() : nullptr;
+	if (bInLevelUpMenu || Stats->IsDead() || !LocalPlayer || !LocalPlayer->ViewportClient)
+	{
+		return;
+	}
+
+	// stop and face the NPC
+	bIsSprinting = false;
+	CachedMoveInput = FVector2D::ZeroVector;
+	GetCharacterMovement()->StopMovementImmediately();
+	if (Npc)
+	{
+		FVector ToNpc = Npc->GetActorLocation() - GetActorLocation();
+		ToNpc.Z = 0.f;
+		if (!ToNpc.IsNearlyZero())
+		{
+			SetActorRotation(ToNpc.Rotation());
+		}
+	}
+	bInLevelUpMenu = true;
+	UpdateRotationMode();
+
+	LevelUpMenu = LevelUpMenuWidget::Create(this);
+	LocalPlayer->ViewportClient->AddViewportWidgetContent(LevelUpMenu.ToSharedRef(), 20);
+
+	// mouse cursor for the buttons; keys still reach the game (E closes)
+	PC->SetShowMouseCursor(true);
+	FInputModeGameAndUI InputMode;
+	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+	InputMode.SetHideCursorDuringCapture(false);
+	PC->SetInputMode(InputMode);
+}
+
+void AOss_TermProjectCharacter::CloseLevelUpMenu()
+{
+	if (!bInLevelUpMenu)
+	{
+		return;
+	}
+	bInLevelUpMenu = false;
+
+	if (LevelUpMenu.IsValid())
+	{
+		if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+		{
+			Viewport->RemoveViewportWidgetContent(LevelUpMenu.ToSharedRef());
+		}
+		LevelUpMenu.Reset();
+	}
+
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		PC->SetShowMouseCursor(false);
+		PC->SetInputMode(FInputModeGameOnly());
+	}
+	UpdateRotationMode();
+}
+
+void AOss_TermProjectCharacter::StartResting(ABonfire* Bonfire)
+{
+	if (bIsResting || Stats->IsDead() || !Bonfire)
+	{
+		return;
+	}
+
+	// drop whatever was going on
+	StopBlocking();
+	ClearLockOn();
+	bIsSprinting = false;
+	CachedMoveInput = FVector2D::ZeroVector;
+	GetCharacterMovement()->StopMovementImmediately();
+
+	bIsResting = true;
+	bIsStandingUp = false;
+	LastBonfire = Bonfire;
+
+	// face the fire
+	FVector ToFire = Bonfire->GetActorLocation() - GetActorLocation();
+	ToFire.Z = 0.f;
+	if (!ToFire.IsNearlyZero())
+	{
+		SetActorRotation(ToFire.Rotation());
+	}
+	UpdateRotationMode();
+
+	// weapon away, kneel down, then hold the kneeling pose
+	StickMesh->SetHiddenInGame(true);
+	PotionMesh->SetHiddenInGame(true);
+	const float DownLength = PlayRestAnimation(RestDownAnimation, 0.2f, 0.f);
+	if (DownLength > 0.f)
+	{
+		GetWorldTimerManager().SetTimer(RestAnimTimer, this, &AOss_TermProjectCharacter::PlayRestIdle, FMath::Max(DownLength - 0.05f, 0.05f), false);
+	}
+	else
+	{
+		PlayRestIdle();
+	}
+
+	// soulslike rest: full health, stamina and potions, and the enemies come back
+	Stats->RestoreAll();
+	RefillPotions();
+	AEnemyCharacter::ResetAllEnemies(this);
+}
+
+void AOss_TermProjectCharacter::StopResting()
+{
+	if (!bIsResting || bIsStandingUp)
+	{
+		return;
+	}
+
+	// get up; still resting (can't act, not attacked) until the animation ends
+	bIsStandingUp = true;
+	const float UpLength = PlayRestAnimation(RestUpAnimation, 0.1f, 0.25f);
+	if (UpLength > 0.f)
+	{
+		GetWorldTimerManager().SetTimer(RestAnimTimer, this, &AOss_TermProjectCharacter::FinishStandingUp, FMath::Max(UpLength - 0.25f, 0.05f), false);
+	}
+	else
+	{
+		if (UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr)
+		{
+			AnimInstance->StopSlotAnimation(0.3f, RestSlotName);
+		}
+		FinishStandingUp();
+	}
+}
+
+float AOss_TermProjectCharacter::PlayRestAnimation(const TSoftObjectPtr<UAnimSequenceBase>& Animation, float BlendIn, float BlendOut, int32 LoopCount)
+{
+	UAnimSequenceBase* Anim = Animation.LoadSynchronous();
+	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
+	if (!Anim || !AnimInstance || !AnimInstance->PlaySlotAnimationAsDynamicMontage(Anim, RestSlotName, BlendIn, BlendOut, 1.f, LoopCount))
+	{
+		return 0.f;
+	}
+	return Anim->GetPlayLength();
+}
+
+void AOss_TermProjectCharacter::PlayRestIdle()
+{
+	if (bIsResting && !bIsStandingUp)
+	{
+		PlayRestAnimation(RestIdleAnimation, 0.1f, 0.2f, 100000);
+	}
+}
+
+void AOss_TermProjectCharacter::FinishStandingUp()
+{
+	GetWorldTimerManager().ClearTimer(RestAnimTimer);
+	bIsResting = false;
+	bIsStandingUp = false;
+	StickMesh->SetHiddenInGame(!bStickEquipped);
+	UpdateRotationMode();
 }
 
 void AOss_TermProjectCharacter::DebugDamage(float Amount)
@@ -1193,6 +1604,8 @@ void AOss_TermProjectCharacter::DebugRestore()
 
 void AOss_TermProjectCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	CloseLevelUpMenu();
+
 	if (StatsOverlay.IsValid())
 	{
 		if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
