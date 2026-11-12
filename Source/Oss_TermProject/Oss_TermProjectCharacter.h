@@ -199,6 +199,10 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Combat")
 	TSoftObjectPtr<class UAnimSequenceBase> HeavyAttackAnimation = TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Attack/MM_ChargedAttack.MM_ChargedAttack")));
 
+	/** Let the camera lag behind attack lunges (off = it follows attacks exactly like walking, nothing can jump) */
+	UPROPERTY(EditAnywhere, Category="Combat|Camera")
+	bool bAttackCameraLag = false;
+
 	/** Camera follow speed while attacking (low = camera nearly stays put while the attack lunges forward) */
 	UPROPERTY(EditAnywhere, Category="Combat|Camera", meta = (ClampMin = 0.1))
 	float AttackCameraLagSpeed = 1.5f;
@@ -207,9 +211,23 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Combat|Camera", meta = (ClampMin = 0.1))
 	float AttackCameraCatchUpSpeed = 8.f;
 
-	/** How long the camera catches up after the attacks end before normal (lag-free) following resumes */
+	/** How long the camera takes to ease back into normal (lag-free) following after the attacks end */
 	UPROPERTY(EditAnywhere, Category="Combat|Camera", meta = (ClampMin = 0, Units = "s"))
 	float AttackCameraCatchUpTime = 0.6f;
+
+	/** How long the camera takes to ease into the slow attack follow when an attack starts */
+	UPROPERTY(EditAnywhere, Category="Combat|Camera", meta = (ClampMin = 0.01, Units = "s"))
+	float AttackCameraEaseInTime = 0.2f;
+
+	/** Follow speed at which the camera counts as "caught up" (lag switched off from here, with nothing left to snap) */
+	UPROPERTY(EditAnywhere, Category="Combat|Camera", meta = (ClampMin = 1))
+	float CameraFollowSpeed = 30.f;
+
+	/** Last time the mouse turned the camera (turning during an attack lets the camera follow normally) */
+	float LastLookInputTime = -1000.f;
+
+	/** Eases the camera lag speed toward the attack / normal value every frame (no sudden speed changes) */
+	void UpdateAttackCamera(float DeltaSeconds);
 
 	/** Max distance the camera may fall behind while attacking */
 	UPROPERTY(EditAnywhere, Category="Combat|Camera", meta = (ClampMin = 0, Units = "cm"))

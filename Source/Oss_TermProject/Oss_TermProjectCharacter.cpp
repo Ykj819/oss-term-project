@@ -1,4 +1,4 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Oss_TermProjectCharacter.h"
 #include "Engine/LocalPlayer.h"
@@ -161,6 +161,12 @@ AOss_TermProjectCharacter::AOss_TermProjectCharacter()
 void AOss_TermProjectCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// camera: exact following to start with (the optional attack lag switches it on and off itself).
+	// The boom aims along the control rotation anyway; as a child of the capsule it also inherited the character's yaw until
+	// its next update, so an instant turn (attack in a new direction, roll) swung the camera around the character for a frame
+	CameraBoom->bEnableCameraLag = false;
+	CameraBoom->SetUsingAbsoluteRotation(true);
 
 	// apply the (possibly Blueprint-edited) walk speed
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
@@ -523,10 +529,11 @@ void AOss_TermProjectCharacter::DoLook(float Yaw, float Pitch)
 		AddControllerPitchInput(Pitch);
 
 		// turning the camera while it lags behind an attack would orbit around an empty point behind the character:
-		// let it catch up so it orbits the character
-		if (bIsAttacking && CameraBoom->bEnableCameraLag && (!FMath::IsNearlyZero(Yaw) || !FMath::IsNearlyZero(Pitch)))
+		// UpdateAttackCamera lets it ease back onto the character while the mouse moves
+		// (ignores tiny mouse jitter, which used to make the camera rush forward mid-attack)
+		if (FMath::Abs(Yaw) + FMath::Abs(Pitch) > 0.3f)
 		{
-			CameraBoom->CameraLagSpeed = AttackCameraCatchUpSpeed;
+			LastLookInputTime = GetWorld()->GetTimeSeconds();
 		}
 	}
 }
@@ -700,11 +707,8 @@ bool AOss_TermProjectCharacter::PlayStickSlash(int32 ComboIndex, bool bChained)
 	CurrentStickAttackLength = Length;
 	NextStickComboIndex = (ComboIndex + 1) % StickComboAnimations.Num();
 
-	// the first slash faces the target / held movement direction (or keeps the current facing); chained slashes keep that facing
-	if (!bChained)
-	{
-		FaceActionDirection();
-	}
+	// every slash (chained ones too) faces the lock-on target / held movement direction, otherwise keeps the character's facing
+	FaceActionDirection();
 	UpdateRotationMode();
 	BeginAttackCamera();
 
@@ -861,27 +865,57 @@ void AOss_TermProjectCharacter::EndAttack()
 
 void AOss_TermProjectCharacter::BeginAttackCamera()
 {
+	// the lag starts at the normal follow speed (camera still glued to the character) and eases down in UpdateAttackCamera:
+	// switching straight to the slow speed made the camera brake abruptly at every swing
 	GetWorldTimerManager().ClearTimer(CameraCatchUpTimer);
-	CameraBoom->bEnableCameraLag = true;
-	CameraBoom->CameraLagSpeed = AttackCameraLagSpeed;
+	if (!bAttackCameraLag)
+	{
+		return;
+	}
+	if (!CameraBoom->bEnableCameraLag)
+	{
+		CameraBoom->bEnableCameraLag = true;
+		CameraBoom->CameraLagSpeed = CameraFollowSpeed;
+	}
 	CameraBoom->CameraLagMaxDistance = AttackCameraMaxLag;
 }
 
 void AOss_TermProjectCharacter::EndAttackCamera()
+{
+	// nothing to do: UpdateAttackCamera eases the speed back up once bIsAttacking is false, then switches the lag off
+}
+
+void AOss_TermProjectCharacter::ResetAttackCamera()
+{
+	if (!bIsAttacking)
+	{
+		CameraBoom->bEnableCameraLag = false;
+	}
+}
+
+void AOss_TermProjectCharacter::UpdateAttackCamera(float DeltaSeconds)
 {
 	if (!CameraBoom->bEnableCameraLag)
 	{
 		return;
 	}
 
-	// catch up smoothly, then switch the lag off once the camera is back in place
-	CameraBoom->CameraLagSpeed = AttackCameraCatchUpSpeed;
-	GetWorldTimerManager().SetTimer(CameraCatchUpTimer, this, &AOss_TermProjectCharacter::ResetAttackCamera, FMath::Max(AttackCameraCatchUpTime, 0.01f), false);
-}
+	// slow follow while swinging (unless the mouse is turning the camera), normal follow otherwise.
+	// The speed changes geometrically (same feel at 1.5 and at 30), so the camera never jumps from braking to rushing
+	const bool bLooking = GetWorld()->GetTimeSeconds() - LastLookInputTime < 0.25f;
+	const bool bHold = bIsAttacking && !bLooking;
+	const float Slow = FMath::Clamp(AttackCameraLagSpeed, 0.1f, CameraFollowSpeed);
+	const float Target = bHold ? Slow : CameraFollowSpeed;
+	const float Range = FMath::Loge(CameraFollowSpeed / Slow);	// log distance between the two speeds
+	const float Time = bHold ? AttackCameraEaseInTime : (bIsAttacking ? 0.15f : AttackCameraCatchUpTime);
+	const float Step = Range / FMath::Max(Time, 0.01f) * DeltaSeconds;
 
-void AOss_TermProjectCharacter::ResetAttackCamera()
-{
-	if (!bIsAttacking)
+	float LogSpeed = FMath::Loge(FMath::Max(CameraBoom->CameraLagSpeed, 0.1f));
+	LogSpeed = FMath::FInterpConstantTo(LogSpeed, FMath::Loge(Target), 1.f, Step);
+	CameraBoom->CameraLagSpeed = FMath::Exp(LogSpeed);
+
+	// back at the normal follow speed after the attacks: the camera sits on the character, so turning the lag off doesn't snap
+	if (!bIsAttacking && CameraBoom->CameraLagSpeed >= CameraFollowSpeed * 0.99f)
 	{
 		CameraBoom->bEnableCameraLag = false;
 	}
@@ -1638,6 +1672,8 @@ void AOss_TermProjectCharacter::Tick(float DeltaSeconds)
 	{
 		UpdateRotationMode();
 	}
+
+	UpdateAttackCamera(DeltaSeconds);
 
 	if (!LockOnTarget)
 	{

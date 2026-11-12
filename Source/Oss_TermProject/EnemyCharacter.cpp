@@ -21,6 +21,8 @@
 #include "EngineUtils.h"
 #include "Oss_TermProjectCharacter.h"
 #include "WolfBoss.h"
+#include "FishmanBoss.h"
+#include "TreeBoss.h"
 
 namespace
 {
@@ -475,6 +477,14 @@ void AEnemyCharacter::ResetAllEnemies(const UObject* WorldContext)
 
 	// bosses go back to their arena and heal (unless already defeated)
 	for (TActorIterator<AWolfBoss> It(World); It; ++It)
+	{
+		It->ResetBoss();
+	}
+	for (TActorIterator<AFishmanBoss> It(World); It; ++It)
+	{
+		It->ResetBoss();
+	}
+	for (TActorIterator<ATreeBoss> It(World); It; ++It)
 	{
 		It->ResetBoss();
 	}
