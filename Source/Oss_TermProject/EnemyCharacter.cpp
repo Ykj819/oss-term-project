@@ -127,6 +127,17 @@ void AEnemyCharacter::BeginPlay()
 	{
 		MID->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.75f, 0.05f, 0.05f));
 	}
+
+	if (bTintBody)
+	{
+		for (int32 i = 0; i < GetMesh()->GetNumMaterials(); ++i)
+		{
+			if (UMaterialInstanceDynamic* MID = GetMesh()->CreateDynamicMaterialInstance(i))
+			{
+				MID->SetVectorParameterValue(TEXT("Paint Tint"), BodyTint);
+			}
+		}
+	}
 }
 
 APawn* AEnemyCharacter::GetPlayer() const
@@ -199,16 +210,23 @@ void AEnemyCharacter::Tick(float DeltaSeconds)
 	const float Distance = FVector::Dist2D(GetActorLocation(), Player->GetActorLocation());
 	const float Now = GetWorld()->GetTimeSeconds();
 
-	switch (State)
+	if (State == EEnemyState::Idle)
 	{
-	case EEnemyState::Idle:
 		if (Distance <= SightRange && CanSee(Player))
 		{
 			State = EEnemyState::Chase;
 			NextAttackTime = Now + FirstAttackDelay;
 		}
-		break;
+		return;
+	}
 
+	TickCombat(Player, Distance, Now, DeltaSeconds);
+}
+
+void AEnemyCharacter::TickCombat(APawn* Player, float Distance, float Now, float DeltaSeconds)
+{
+	switch (State)
+	{
 	case EEnemyState::Chase:
 		if (Distance > LoseSightRange)
 		{
@@ -324,7 +342,7 @@ float AEnemyCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Damage
 	}
 
 	const float Taken = Stats->ApplyDamage(Damage, DamageCauser);
-	if (State == EEnemyState::Dead)
+	if (State == EEnemyState::Dead || !bFlinchOnHit)
 	{
 		return Taken;
 	}

@@ -52,7 +52,7 @@ public:
 
 	/** Back to its starting spot with full health (revives it if dead) */
 	UFUNCTION(BlueprintCallable, Category="Enemy")
-	void ResetEnemy();
+	virtual void ResetEnemy();
 
 	/** Resets every enemy in the world (resting at a bonfire, player respawn) */
 	static void ResetAllEnemies(const UObject* WorldContext);
@@ -133,6 +133,10 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Enemy|Hit")
 	TSoftObjectPtr<UAnimSequenceBase> HitReactAnimation;
 
+	/** Off = hits only take health (no flinch, attacks are not interrupted) */
+	UPROPERTY(EditAnywhere, Category="Enemy|Hit")
+	bool bFlinchOnHit = true;
+
 	/** How long a hit stops the enemy (interrupts its attack) */
 	UPROPERTY(EditAnywhere, Category="Enemy|Hit", meta = (ClampMin = 0, Units = "s"))
 	float HitStaggerTime = 0.5f;
@@ -151,6 +155,15 @@ protected:
 
 	UPROPERTY(EditAnywhere, Category="Enemy|Health Bar", meta = (Units = "cm"))
 	float HealthBarHeight = 120.f;
+
+	// ---- Look ----
+
+	/** Recolors the mannequin (sets the material's "Paint Tint") so enemy types are easy to tell apart */
+	UPROPERTY(EditAnywhere, Category="Enemy|Look")
+	bool bTintBody = false;
+
+	UPROPERTY(EditAnywhere, Category="Enemy|Look", meta = (EditCondition = "bTintBody"))
+	FLinearColor BodyTint = FLinearColor(0.5f, 0.5f, 0.5f);
 
 	// ---- Runtime ----
 
@@ -186,11 +199,16 @@ protected:
 
 	void FaceTowards(const FVector& Location, float DeltaSeconds, float Speed);
 
+	/** Chase / Attack behavior once the player has been noticed (subclasses replace it) */
+	virtual void TickCombat(APawn* Player, float Distance, float Now, float DeltaSeconds);
+
+	/** Melee attack (fists) */
 	void StartAttack();
 
 	void EndAttack();
 
-	void CancelAttack();
+	/** Stops the current attack (hit, death, reset) */
+	virtual void CancelAttack();
 
 	void EndStagger();
 

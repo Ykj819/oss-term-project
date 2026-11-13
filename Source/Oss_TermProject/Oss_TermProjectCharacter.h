@@ -783,6 +783,9 @@ public:
 	UFUNCTION(BlueprintPure, Category="Bonfire")
 	bool IsResting() const { return bIsResting; }
 
+	/** In the invincible part of a roll (projectiles fly through) */
+	bool IsDodging() const { return IsInvincible(); }
+
 	/** Console (`): DebugDamage 20 */
 	UFUNCTION(Exec)
 	void DebugDamage(float Amount);
