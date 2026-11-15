@@ -5,6 +5,7 @@
 #include "StatsComponent.h"
 #include "BossHealthBar.h"
 #include "MeleeHitComponent.h"
+#include "BossWeatherComponent.h"
 #include "Oss_TermProjectCharacter.h"
 #include "Oss_TermProject.h"
 #include "AIController.h"
@@ -76,6 +77,13 @@ AWolfBoss::AWolfBoss()
 	Stats = CreateDefaultSubobject<UStatsComponent>(TEXT("Stats"));
 	MeleeHit = CreateDefaultSubobject<UMeleeHitComponent>(TEXT("MeleeHit"));
 	MeleeHit->IgnoreTags.Add(TEXT("Enemy"));
+
+	Weather = CreateDefaultSubobject<UBossWeatherComponent>(TEXT("Weather"));
+	Weather->Weather = EBossWeather::Snow;
+	Weather->ParticleCount = 900;
+	Weather->bFrostBorder = true;
+	Weather->FrostBorderOpacity = 0.57f;	// 2/3 of the first version (0.85)
+	Weather->Wind = FVector2D(120.f, 60.f);
 
 	WalkForwardAnim = WolfAnim(TEXT("Wolf_Walk_Fwd"));
 	WalkLeftAnim = WolfAnim(TEXT("Wolf_Walk_Left"));
@@ -642,6 +650,7 @@ float AWolfBoss::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent,
 	if (!bPhaseTwo && !Stats->IsDead() && Stats->GetHealth() <= Stats->GetMaxHealth() * PhaseTwoHealth)
 	{
 		bPhaseTwo = true;
+		Weather->SetWeatherActive(true);
 		if (GEngine)
 		{
 			GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor(255, 120, 40), FString::Printf(TEXT("%s is enraged"), *BossName.ToString()), true, FVector2D(2.f, 2.f));
@@ -652,6 +661,7 @@ float AWolfBoss::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent,
 
 void AWolfBoss::HandleDeath(AActor* DamageCauser)
 {
+	Weather->SetWeatherActive(false);	// the snow fades out
 	State = EWolfState::Dead;
 	CurrentAction = EWolfAction::None;
 	QueuedAction = EWolfAction::None;
@@ -730,6 +740,7 @@ void AWolfBoss::ResetBoss()
 
 	Stats->RestoreAll();
 	bPhaseTwo = false;
+	Weather->SetWeatherActive(false, true);
 	NextJumpBackTime = 0.f;
 	QueuedAction = EWolfAction::None;
 	CurrentAction = EWolfAction::None;

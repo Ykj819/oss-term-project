@@ -53,6 +53,10 @@ class AWolfBoss : public ACharacter
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	UBoxComponent* BodyBlocker;
 
+	/** Phase 2: snowfall + white frost border on the screen */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	class UBossWeatherComponent* Weather;
+
 public:
 
 	AWolfBoss();

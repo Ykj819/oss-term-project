@@ -269,7 +269,8 @@ protected:
 	FVector2D UnarmedHeavyHitWindow = FVector2D(0.35f, 0.75f);
 
 	UPROPERTY(EditAnywhere, Category="Combat|Damage")
-	FVector2D StickSlashHitWindow = FVector2D(0.2f, 0.6f);
+	/** Slash A hits ~f27-36, slash B ~f25-34 of their 60 frames (Export/Blender/Club.blend, gen_stick.py) */
+	FVector2D StickSlashHitWindow = FVector2D(0.40f, 0.60f);
 
 	UPROPERTY(EditAnywhere, Category="Combat|Damage")
 	FVector2D StickHeavyHitWindow = FVector2D(0.35f, 0.7f);
@@ -367,7 +368,7 @@ protected:
 
 	/** Extra speed on top of the unarmed-matched timing (1 = same duration as the unarmed attack) */
 	UPROPERTY(EditAnywhere, Category="Weapon|Combo", meta = (ClampMin = 0.1))
-	float StickAttackSpeedMultiplier = 1.3f;
+	float StickAttackSpeedMultiplier = 1.05f;
 
 	/** Per-slash play rate (computed on BeginPlay) */
 	TArray<float> StickComboPlayRates;

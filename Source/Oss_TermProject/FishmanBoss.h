@@ -44,6 +44,10 @@ class AFishmanBoss : public ACharacter
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	UMeleeHitComponent* MeleeHit;
 
+	/** Phase 2: rain (a lighter grey-blue mood than the tree's storm) */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	class UBossWeatherComponent* Weather;
+
 public:
 
 	AFishmanBoss();

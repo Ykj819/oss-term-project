@@ -4,6 +4,7 @@
 #include "StatsComponent.h"
 #include "BossHealthBar.h"
 #include "MeleeHitComponent.h"
+#include "BossWeatherComponent.h"
 #include "Oss_TermProjectCharacter.h"
 #include "Oss_TermProject.h"
 #include "AIController.h"
@@ -65,6 +66,14 @@ AFishmanBoss::AFishmanBoss()
 	Stats = CreateDefaultSubobject<UStatsComponent>(TEXT("Stats"));
 	MeleeHit = CreateDefaultSubobject<UMeleeHitComponent>(TEXT("MeleeHit"));
 	MeleeHit->IgnoreTags.Add(TEXT("Enemy"));
+
+	Weather = CreateDefaultSubobject<UBossWeatherComponent>(TEXT("Weather"));
+	Weather->Weather = EBossWeather::Rain;
+	Weather->ParticleCount = 1500;
+	Weather->bFrostBorder = false;
+	Weather->VignetteIntensity = 0.7f;
+	Weather->Wind = FVector2D(260.f, 110.f);
+	Weather->FadeTime = 2.5f;
 
 	SlamAnim = FishmanAnim(TEXT("Fish_Slam"));
 	JumpSlamAnim = FishmanAnim(TEXT("Fish_Jump_Slam"));
@@ -493,6 +502,7 @@ float AFishmanBoss::TakeDamage(float DamageAmount, FDamageEvent const& DamageEve
 	if (!bPhaseTwo && !Stats->IsDead() && Stats->GetHealth() <= Stats->GetMaxHealth() * PhaseTwoHealth)
 	{
 		bPhaseTwo = true;
+		Weather->SetWeatherActive(true);
 		if (GEngine)
 		{
 			GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor(255, 120, 40), FString::Printf(TEXT("%s is enraged"), *BossName.ToString()), true, FVector2D(2.f, 2.f));
@@ -503,6 +513,7 @@ float AFishmanBoss::TakeDamage(float DamageAmount, FDamageEvent const& DamageEve
 
 void AFishmanBoss::HandleDeath(AActor* DamageCauser)
 {
+	Weather->SetWeatherActive(false);	// the rain stops slowly
 	State = EFishmanState::Dead;
 	CurrentAction = EFishmanAction::None;
 	QueuedAction = EFishmanAction::None;
@@ -574,6 +585,7 @@ void AFishmanBoss::ResetBoss()
 
 	Stats->RestoreAll();
 	bPhaseTwo = false;
+	Weather->SetWeatherActive(false, true);
 	QueuedAction = EFishmanAction::None;
 	CurrentAction = EFishmanAction::None;
 	LastAttack = EFishmanAction::None;

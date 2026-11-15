@@ -41,6 +41,7 @@
 #include "SoulDrop.h"
 #include "LevelUpMenuWidget.h"
 #include "EnemyCharacter.h"
+#include "EnemyLeech.h"
 
 namespace
 {
@@ -152,7 +153,8 @@ AOss_TermProjectCharacter::AOss_TermProjectCharacter()
 	StickComboAnimations.Add(TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(TEXT("/Game/Characters/Mannequins/Anims/Stick/MM_Stick_Slash_A.MM_Stick_Slash_A"))));
 	StickComboAnimations.Add(TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(TEXT("/Game/Characters/Mannequins/Anims/Stick/MM_Stick_Slash_B.MM_Stick_Slash_B"))));
 	// when B chains back into A, start A at its wind-up (B already ends with the stick raised)
-	StickComboChainStartTimes = { 0.15f, 0.f };
+	// slash A chained after B skips only its first moment (B ends low right, A rises from the ready stance into its wind-up)
+	StickComboChainStartTimes = { 0.05f, 0.f };
 
 	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
 	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
@@ -379,6 +381,8 @@ void AOss_TermProjectCharacter::SetupPlayerInputComponent(UInputComponent* Playe
 		{
 			PotionAction = MakeRuntimeAction(TEXT("IA_Potion_Runtime"), EKeys::R);
 		}
+		// test cheat (mapped before the context is registered below)
+		UInputAction* DebugSoulsAction = MakeRuntimeAction(TEXT("IA_DebugSouls_Runtime"), EKeys::Zero);
 
 		if (RuntimeInputMappingContext)
 		{
@@ -435,6 +439,13 @@ void AOss_TermProjectCharacter::SetupPlayerInputComponent(UInputComponent* Playe
 
 		// Drinking a potion
 		EnhancedInputComponent->BindAction(PotionAction, ETriggerEvent::Started, this, &AOss_TermProjectCharacter::DoDrinkPotion);
+
+		// Test cheat: 0 = +10000 souls
+		EnhancedInputComponent->BindActionValueLambda(DebugSoulsAction, ETriggerEvent::Started, [this](const FInputActionValue&)
+		{
+			AddSouls(10000);
+			ShowCombatText(TEXT("+10000 souls (debug)"), FColor(255, 210, 90));
+		});
 	}
 	else
 	{
@@ -985,6 +996,12 @@ void AOss_TermProjectCharacter::DoToggleStick()
 
 void AOss_TermProjectCharacter::DoInteract()
 {
+	// a leech stuck to the body: E tugs at it (works even mid-attack / staggered), nothing else happens
+	if (!Stats->IsDead() && AEnemyLeech::TryShakeOff(this))
+	{
+		return;
+	}
+
 	// E again at the bonfire: stand up
 	if (bIsResting)
 	{
@@ -1698,7 +1715,7 @@ void AOss_TermProjectCharacter::Tick(float DeltaSeconds)
 	{
 		const FVector ViewOrigin = GetActorLocation() + FVector(0.f, 0.f, BaseEyeHeight);
 		FRotator Desired = (TargetPoint - ViewOrigin).Rotation();
-		Desired.Pitch = FMath::Clamp(Desired.Pitch + LockOnPitchOffset, -60.f, 30.f);
+		Desired.Pitch = FMath::Clamp(Desired.Pitch + LockOnPitchOffset, -60.f, 0.f);
 		Desired.Roll = 0.f;
 		PC->SetControlRotation(FMath::RInterpTo(PC->GetControlRotation(), Desired, DeltaSeconds, LockOnCameraSpeed));
 	}
