@@ -383,6 +383,7 @@ void AOss_TermProjectCharacter::SetupPlayerInputComponent(UInputComponent* Playe
 		}
 		// test cheat (mapped before the context is registered below)
 		UInputAction* DebugSoulsAction = MakeRuntimeAction(TEXT("IA_DebugSouls_Runtime"), EKeys::Zero);
+		UInputAction* DebugLevelsAction = MakeRuntimeAction(TEXT("IA_DebugLevels_Runtime"), EKeys::Nine);
 
 		if (RuntimeInputMappingContext)
 		{
@@ -445,6 +446,22 @@ void AOss_TermProjectCharacter::SetupPlayerInputComponent(UInputComponent* Playe
 		{
 			AddSouls(10000);
 			ShowCombatText(TEXT("+10000 souls (debug)"), FColor(255, 210, 90));
+		});
+
+		// Test cheat: 9 = Vigor 20 / Endurance 20 / Strength 100, bars refilled
+		EnhancedInputComponent->BindActionValueLambda(DebugLevelsAction, ETriggerEvent::Started, [this](const FInputActionValue&)
+		{
+			if (Stats->IsDead())
+			{
+				return;
+			}
+			VigorLevel = 20;
+			EnduranceLevel = 20;
+			StrengthLevel = 100;
+			Stats->SetMaxHealth(BaseMaxHealth + (VigorLevel - 1) * HealthPerVigor);
+			Stats->SetMaxStamina(BaseMaxStamina + (EnduranceLevel - 1) * StaminaPerEndurance);
+			Stats->RestoreAll();
+			ShowCombatText(TEXT("Vigor 20 / Endurance 20 / Strength 100 (debug)"), FColor(255, 210, 90));
 		});
 	}
 	else

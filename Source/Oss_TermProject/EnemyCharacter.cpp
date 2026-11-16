@@ -85,6 +85,8 @@ AEnemyCharacter::AEnemyCharacter()
 		Part->SetGenerateOverlapEvents(false);
 		Part->SetCastShadow(false);
 		Part->SetHiddenInGame(true);
+		// absolute transform = world origin until the first tick moves it, so keep it out of the editor viewport
+		Part->SetVisibility(false);
 		if (CubeMesh.Succeeded())
 		{
 			Part->SetStaticMesh(CubeMesh.Object);
@@ -118,6 +120,10 @@ void AEnemyCharacter::BeginPlay()
 	}
 	HeavyAttackAnimation.LoadSynchronous();
 	HitReactAnimation.LoadSynchronous();
+
+	// shown/hidden in game through bHiddenInGame (UpdateHealthBar)
+	HealthBarBack->SetVisibility(true);
+	HealthBarFill->SetVisibility(true);
 
 	if (UMaterialInstanceDynamic* MID = HealthBarBack->CreateDynamicMaterialInstance(0))
 	{
