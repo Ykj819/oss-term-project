@@ -203,9 +203,11 @@ def tex_grass(rng):
 def tex_stone(rng):
     # pebble ground: round/oval stones stamped one by one (overlapping), dark soil between them
     big, fine = bake([('noise', 3, 3, 4, {'detail': 3}), ('noise', 30, 30, 5, {'detail': 4})])
-    SOIL_A = (0.04, 0.028, 0.018); SOIL_B = (0.08, 0.055, 0.035)
+    SOIL_A = (0.035, 0.02, 0.01); SOIL_B = (0.075, 0.042, 0.02)
     col = lerp3(SOIL_A, SOIL_B, big); h = 0.05 * fine
-    PAL = [(0.20, 0.20, 0.19), (0.27, 0.24, 0.20), (0.15, 0.16, 0.18), (0.24, 0.23, 0.22), (0.18, 0.15, 0.12)]
+    # v2: warmer / cooler, more saturated pebbles (v1 was a flat grey mix that read as blurry on the landscape)
+    PAL = [(0.34, 0.26, 0.17), (0.25, 0.26, 0.28), (0.40, 0.32, 0.21), (0.21, 0.22, 0.25), (0.36, 0.21, 0.11),
+           (0.29, 0.28, 0.26)]
     for k in range(1100):
         size = rng.randint(60, 150); ang = rng.uniform(0, math.pi)
         U, V = shape_grid(size, ang)
@@ -214,7 +216,7 @@ def tex_stone(rng):
         mask = smooth(0.0, 0.08, 0.92 - d)
         dome = np.sqrt(np.clip(1 - d * d, 0, 1))
         c = np.asarray(PAL[rng.randrange(len(PAL))], np.float32) * (0.8 + 0.4 * rng.random())
-        light = 0.75 + 0.35 * dome + 0.15 * (-U * 0.5 + V * 0.5)       # soft top light, stylized
+        light = 0.6 + 0.55 * dome + 0.2 * (-U * 0.5 + V * 0.5)         # soft top light, stylized (strong)
         stamp(h, col, rng.uniform(0, RES), rng.uniform(0, RES), mask, 0.3 + 0.7 * dome, c[None, None, :] * light[..., None],
               mode='max')
     col = col * (0.92 + 0.16 * fine[..., None])
@@ -231,10 +233,13 @@ def tex_rock(rng):
     plane = cell * 0.6 + (f1 - f1.mean()) * 0.6
     e = edge / np.percentile(edge, 98); c2 = crack / np.percentile(crack, 98)
     h = plane * smooth(0.0, 0.08, e) + 0.06 * fine - 0.12 * (1 - smooth(0.0, 0.05, c2))
-    DARK = (0.045, 0.05, 0.06); MID = (0.14, 0.145, 0.155); LIGHT = (0.27, 0.27, 0.26); WARM = (0.22, 0.18, 0.14)
-    t = np.clip(0.3 + cell * 0.6 + (fine - 0.5) * 0.3, 0, 1)
-    col = lerp3(DARK, MID, smooth(0.0, 0.5, t)); col = lerp3(col, LIGHT, smooth(0.55, 1.0, t))
-    col = lerp3(col, WARM, smooth(0.5, 0.8, big) * 0.3)
+    # v2: wider value range and warm/cool facets (v1 was nearly colourless grey and read as blurry)
+    DARK = (0.03, 0.035, 0.05); MID = (0.15, 0.15, 0.17); LIGHT = (0.42, 0.40, 0.36)
+    WARM = (0.40, 0.27, 0.15); COOL = (0.17, 0.21, 0.30)
+    t = np.clip(0.25 + cell * 0.75 + (fine - 0.5) * 0.3, 0, 1)
+    col = lerp3(DARK, MID, smooth(0.0, 0.45, t)); col = lerp3(col, LIGHT, smooth(0.5, 1.0, t))
+    col = lerp3(col, WARM, smooth(0.45, 0.8, big) * 0.5)
+    col = lerp3(col, COOL, smooth(0.55, 0.2, big) * 0.35)
     col = col * (0.4 + 0.6 * smooth(0.0, 0.08, e))[..., None] * (0.5 + 0.5 * smooth(0.0, 0.05, c2))[..., None]
     rough = np.full_like(h, 0.82)
     return write_set('Rock', col, h, rough, 0.05, ao_r=10, ao_k=2.0)
@@ -296,14 +301,15 @@ def tex_soil(rng):
                             ('noise', 45, 45, 20, {'detail': 4})])
     clods = smooth(0.3, 0.75, lump)                      # soft lumps, no crack network
     h = 0.35 * clods + 0.45 * big + 0.15 * fine
-    DARK = (0.06, 0.037, 0.022); MID = (0.10, 0.062, 0.035); LIGHT = (0.15, 0.10, 0.06)
-    col = lerp3(DARK, MID, smooth(0.0, 0.5, clods)); col = lerp3(col, LIGHT, smooth(0.5, 0.95, 0.5 * clods + 0.5 * big) * 0.7)
-    for k in range(450):  # small pebbles
+    # v2: richer, warmer brown with a wider dark->light range (v1 was flat and read as blurry)
+    DARK = (0.035, 0.018, 0.008); MID = (0.12, 0.062, 0.026); LIGHT = (0.26, 0.15, 0.07)
+    col = lerp3(DARK, MID, smooth(0.0, 0.5, clods)); col = lerp3(col, LIGHT, smooth(0.45, 0.95, 0.5 * clods + 0.5 * big) * 0.85)
+    for k in range(700):  # small pebbles
         size = rng.randint(10, 26); ang = rng.uniform(0, math.pi)
         U, V = shape_grid(size, ang)
         d = np.sqrt(U ** 2 + (V * rng.uniform(1.0, 1.6)) ** 2)
         mask = smooth(0.0, 0.25, 0.9 - d)
-        c = np.asarray((0.12, 0.10, 0.08), np.float32) * (0.7 + 0.4 * rng.random())
+        c = np.asarray((0.30, 0.24, 0.17), np.float32) * (0.7 + 0.5 * rng.random())
         colr = c[None, None, :] * (0.8 + 0.4 * (1 - d))[..., None]
         stamp(h, col, rng.uniform(0, RES), rng.uniform(0, RES), mask, 0.9 + 0.1 * (1 - d), colr, mode='max')
     rough = np.full_like(h, 0.95)
