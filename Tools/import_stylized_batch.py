@@ -40,7 +40,8 @@ def vc_material(path, two_sided, roughness):
     mat = tools.create_asset(name, folder, unreal.Material, unreal.MaterialFactoryNew())
     mat.set_editor_property("two_sided", two_sided)
     mat.set_editor_property("used_with_instanced_static_meshes", True)
-    vc = mel.create_material_expression(mat, unreal.MaterialExpressionVertexColor, -700, 0)
+    mat.set_editor_property("used_with_nanite", True)
+    vc =mel.create_material_expression(mat, unreal.MaterialExpressionVertexColor, -700, 0)
     gamma = mel.create_material_expression(mat, unreal.MaterialExpressionScalarParameter, -700, 200)
     gamma.set_editor_property("parameter_name", "VertexColorGamma"); gamma.set_editor_property("default_value", 2.2)
     pw = mel.create_material_expression(mat, unreal.MaterialExpressionPower, -450, 0)
@@ -160,6 +161,7 @@ def tex_param(mat, name, t, sampler, uv, x, y):
 
 surf = rebuild(f"{MATS}/M_Stylized_Surface", True)
 surf.set_editor_property("used_with_instanced_static_meshes", True)
+surf.set_editor_property("used_with_nanite", True)
 tc = E(surf, unreal.MaterialExpressionTextureCoordinate, -1600, 0)
 tiling = scalar(surf, "Tiling", 1.0, -1600, 120)
 uv = E(surf, unreal.MaterialExpressionMultiply, -1400, 0)

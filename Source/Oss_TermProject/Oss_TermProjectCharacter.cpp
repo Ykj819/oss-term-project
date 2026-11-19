@@ -42,6 +42,31 @@
 #include "LevelUpMenuWidget.h"
 #include "EnemyCharacter.h"
 #include "EnemyLeech.h"
+#include "Materials/MaterialParameterCollection.h"
+#include "Materials/MaterialParameterCollectionInstance.h"
+
+namespace
+{
+	// Camera occlusion fade: environment materials (trees, rocks, props) dither out the part of themselves that lies
+	// inside a capsule from the camera to the player (see Tools/create_camera_occlusion.py). This feeds the capsule
+	// end points to the material parameter collection every frame.
+	void UpdateCameraOcclusion(UWorld* World, const FVector& CameraPos, const FVector& PlayerPos)
+	{
+		static TWeakObjectPtr<UMaterialParameterCollection> Collection;
+		static bool bTriedLoad = false;   // load once (no per-frame load attempts / log spam if the asset is missing)
+		if (!Collection.IsValid() && !bTriedLoad)
+		{
+			bTriedLoad = true;
+			Collection = LoadObject<UMaterialParameterCollection>(nullptr, TEXT("/Game/Environment/Materials/MPC_CameraOcclusion.MPC_CameraOcclusion"));
+		}
+		UMaterialParameterCollectionInstance* Instance = (World && Collection.IsValid()) ? World->GetParameterCollectionInstance(Collection.Get()) : nullptr;
+		if (Instance)
+		{
+			Instance->SetVectorParameterValue(TEXT("CameraPos"), FLinearColor(CameraPos.X, CameraPos.Y, CameraPos.Z, 0.f));
+			Instance->SetVectorParameterValue(TEXT("PlayerPos"), FLinearColor(PlayerPos.X, PlayerPos.Y, PlayerPos.Z, 0.f));
+		}
+	}
+}
 
 namespace
 {
@@ -1708,6 +1733,12 @@ void AOss_TermProjectCharacter::Tick(float DeltaSeconds)
 	}
 
 	UpdateAttackCamera(DeltaSeconds);
+
+	if (IsPlayerControlled())
+	{
+		// capsule end at the chest so the whole body stays visible
+		UpdateCameraOcclusion(GetWorld(), FollowCamera->GetComponentLocation(), GetActorLocation() + FVector(0.f, 0.f, 40.f));
+	}
 
 	if (!LockOnTarget)
 	{
