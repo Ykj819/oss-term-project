@@ -39,9 +39,15 @@ AFishmanBoss::AFishmanBoss()
 	GetCapsuleComponent()->InitCapsuleSize(BaseCapsuleRadius * BossScale, BaseCapsuleHalfHeight * BossScale);
 	GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 
-	// same mannequin rig as the player, twice the size (replace the mesh in a Blueprint child; keep the mannequin skeleton)
+	// fish-headed brawler on the mannequin skeleton (SK_Mannequin, own physics asset), twice the size;
+	// falls back to Manny if the model is missing
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> FishmanMesh(TEXT("/Game/Characters/Fishman/Mesh/SKM_FishMan.SKM_FishMan"));
 	static ConstructorHelpers::FObjectFinder<USkeletalMesh> MannyMesh(TEXT("/Game/Characters/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple"));
-	if (MannyMesh.Succeeded())
+	if (FishmanMesh.Succeeded())
+	{
+		GetMesh()->SetSkeletalMeshAsset(FishmanMesh.Object);
+	}
+	else if (MannyMesh.Succeeded())
 	{
 		GetMesh()->SetSkeletalMeshAsset(MannyMesh.Object);
 	}
