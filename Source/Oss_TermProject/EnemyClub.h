@@ -57,7 +57,7 @@ protected:
 	float MaxHealth = 200.f;
 
 	UPROPERTY(EditAnywhere, Category="Enemy|Club Giant")
-	FLinearColor ClubColor = FLinearColor(0.16f, 0.09f, 0.04f);
+	FLinearColor ClubColor = FLinearColor(1.f, 1.f, 1.f);	// multiplies the bat's wood texture
 
 	// ---- Club (unscaled mannequin cm; the whole body incl. the club is scaled by SizeScale) ----
 

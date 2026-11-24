@@ -47,8 +47,6 @@ AEnemyFogTree::AEnemyFogTree()
 	bFlinchOnHit = false;
 	BaseEyeHeight = 120.f;
 
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> CylinderMesh(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> ConeMesh(TEXT("/Engine/BasicShapes/Cone.Cone"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereMesh(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 
 	// ---- tree (origin at the ground under the capsule) ----
@@ -56,76 +54,26 @@ AEnemyFogTree::AEnemyFogTree()
 	TreeRoot->SetupAttachment(RootComponent);
 	TreeRoot->SetRelativeLocation(FVector(0.f, 0.f, -TreeHalfHeight));
 
-	int32 PartIndex = 0;
-	// one limb = an engine cylinder (100 wide/tall, centered) or a cone for the pointed tips, from Start along Dir
-	auto AddLimb = [&](const FVector& Start, const FVector& Dir, float Length, float Thickness, bool bTip)
+	// one mesh: trunk, roots and bare branches as a single smooth surface with the realistic bark texture
+	// (Export/Blender/scripts/props/gen_enemy_props.py, same layout as the old engine-shape tree; origin = ground)
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> TreeMesh(TEXT("/Game/Characters/Enemies/Meshes/SM_FogTree.SM_FogTree"));
+	UStaticMeshComponent* Wood = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Wood"));
+	Wood->SetupAttachment(TreeRoot);
+	Wood->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Wood->SetGenerateOverlapEvents(false);
+	Wood->SetCanEverAffectNavigation(false);
+	if (TreeMesh.Succeeded())
 	{
-		UStaticMeshComponent* Part = CreateDefaultSubobject<UStaticMeshComponent>(*FString::Printf(TEXT("Wood%d"), PartIndex++));
-		Part->SetupAttachment(TreeRoot);
-		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Part->SetGenerateOverlapEvents(false);
-		Part->SetCanEverAffectNavigation(false);
-		UStaticMesh* Mesh = bTip ? ConeMesh.Object : CylinderMesh.Object;
-		if (Mesh)
-		{
-			Part->SetStaticMesh(Mesh);
-		}
-		const FVector D = Dir.GetSafeNormal();
-		Part->SetRelativeLocation(Start + D * Length * 0.5f);
-		Part->SetRelativeRotation(FRotationMatrix::MakeFromZ(D).Rotator());
-		Part->SetRelativeScale3D(FVector(Thickness / 100.f, Thickness / 100.f, Length / 100.f));
-		TreeParts.Add(Part);
-		return Start + D * Length;
-	};
-	auto DirFrom = [](float YawDeg, float TiltFromUpDeg)
-	{
-		const float Yaw = FMath::DegreesToRadians(YawDeg);
-		const float Tilt = FMath::DegreesToRadians(TiltFromUpDeg);
-		return FVector(FMath::Cos(Yaw) * FMath::Sin(Tilt), FMath::Sin(Yaw) * FMath::Sin(Tilt), FMath::Cos(Tilt));
-	};
-
-	// trunk: thick base, thinner crooked upper part, broken-off top
-	FVector Top = AddLimb(FVector(0.f, 0.f, -10.f), FVector::UpVector, 170.f, 62.f, false);
-	Top = AddLimb(Top - FVector(0.f, 0.f, 8.f), DirFrom(20.f, 9.f), 120.f, 46.f, false);
-	AddLimb(Top - FVector(0.f, 0.f, 6.f), DirFrom(200.f, 14.f), 70.f, 32.f, true);
-
-	// roots clawing into the ground
-	for (int32 i = 0; i < 5; ++i)
-	{
-		const float Yaw = i * 72.f + 15.f;
-		AddLimb(FVector(0.f, 0.f, 30.f), DirFrom(Yaw, 112.f), 85.f, 24.f, true);
+		Wood->SetStaticMesh(TreeMesh.Object);
 	}
-
-	// bare branches with a pair of twigs each (fixed seed: every tree looks the same in the editor and in game)
-	FRandomStream Rand(1337);
-	struct FBranch { float Z; float Yaw; float Tilt; float Length; float Thick; };
-	const FBranch Branches[] = {
-		{ 165.f,  35.f, 58.f, 150.f, 20.f },
-		{ 205.f, 150.f, 48.f, 170.f, 18.f },
-		{ 240.f, 265.f, 60.f, 130.f, 15.f },
-		{ 270.f,  95.f, 35.f, 120.f, 14.f },
-		{ 225.f, 330.f, 70.f, 110.f, 13.f },
-	};
-	for (const FBranch& B : Branches)
-	{
-		const FVector BranchDir = DirFrom(B.Yaw, B.Tilt);
-		const FVector Mid = AddLimb(FVector(0.f, 0.f, B.Z), BranchDir, B.Length * 0.6f, B.Thick, false);
-		const FVector End = AddLimb(Mid, DirFrom(B.Yaw + Rand.FRandRange(-25.f, 25.f), B.Tilt - Rand.FRandRange(5.f, 20.f)), B.Length * 0.4f, B.Thick * 0.7f, true);
-		for (int32 t = 0; t < 2; ++t)
-		{
-			const float Side = t == 0 ? -1.f : 1.f;
-			const FVector From = t == 0 ? Mid : FMath::Lerp(Mid, End, 0.5f);
-			AddLimb(From, DirFrom(B.Yaw + Side * Rand.FRandRange(35.f, 60.f), B.Tilt - Rand.FRandRange(10.f, 30.f)), B.Length * Rand.FRandRange(0.3f, 0.45f), B.Thick * 0.45f, true);
-		}
-	}
-
-	// ---- fog puffs (flattened translucent spheres drifting around the trunk) ----
+	TreeParts.Add(Wood);
+	// ---- fog puffs (flattened spheres drifting around the trunk; M_EnemyFog: soft edges, drifting noise, depth fade) ----
 	FogRoot = CreateDefaultSubobject<USceneComponent>(TEXT("FogRoot"));
 	FogRoot->SetupAttachment(RootComponent);
 	FogRoot->SetUsingAbsoluteRotation(true);
 	FogRoot->SetRelativeLocation(FVector(0.f, 0.f, -TreeHalfHeight));
 
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> FogMat(TEXT("/Engine/EngineDebugMaterials/M_SimpleTranslucent.M_SimpleTranslucent"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> FogMat(TEXT("/Game/Characters/Enemies/Materials/M_EnemyFog.M_EnemyFog"));
 	for (int32 i = 0; i < NumPuffs; ++i)
 	{
 		UStaticMeshComponent* Puff = CreateDefaultSubobject<UStaticMeshComponent>(*FString::Printf(TEXT("FogPuff%d"), i));
@@ -158,12 +106,24 @@ void AEnemyFogTree::BeginPlay()
 	}
 	GetCharacterMovement()->MaxWalkSpeed = 0.f;
 
+	// placed actors saved this array when it held the old engine-shape parts (now deleted -> null entries): rebuild it
+	TreeParts.Reset();
+	{
+		TInlineComponentArray<UStaticMeshComponent*> Comps(this);
+		for (UStaticMeshComponent* Comp : Comps)
+		{
+			if (Comp && Comp->GetFName() == TEXT("Wood"))
+			{
+				TreeParts.Add(Comp);
+			}
+		}
+	}
+
 	for (UStaticMeshComponent* Part : TreeParts)
 	{
 		if (UMaterialInstanceDynamic* MID = Part->CreateDynamicMaterialInstance(0))
 		{
-			// a little variation between pieces of wood
-			MID->SetVectorParameterValue(TEXT("Color"), BarkColor * FMath::FRandRange(0.8f, 1.2f));
+			MID->SetVectorParameterValue(TEXT("Color"), BarkColor);
 		}
 	}
 

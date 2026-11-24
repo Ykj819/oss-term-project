@@ -13,6 +13,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -60,6 +61,24 @@ void AEnemyWolf::BeginPlay()
 	GetMesh()->SetRelativeScale3D(FVector(MeshScale));
 
 	Super::BeginPlay();
+
+	// grey fur + dimmer eyes than the boss (same SK_Wolf asset, so per-instance material parameters)
+	const int32 FurSlot = GetMesh()->GetMaterialIndex(TEXT("M_Wolf"));
+	if (FurSlot != INDEX_NONE)
+	{
+		if (UMaterialInstanceDynamic* MID = GetMesh()->CreateDynamicMaterialInstance(FurSlot))
+		{
+			MID->SetVectorParameterValue(TEXT("Tint"), FurTint);
+		}
+	}
+	const int32 EyeSlot = GetMesh()->GetMaterialIndex(TEXT("M_WolfEye"));
+	if (EyeSlot != INDEX_NONE)
+	{
+		if (UMaterialInstanceDynamic* MID = GetMesh()->CreateDynamicMaterialInstance(EyeSlot))
+		{
+			MID->SetScalarParameterValue(TEXT("EyeGlow"), EyeGlow);
+		}
+	}
 
 	if (UClass* Class = WolfAnimClass.LoadSynchronous())
 	{

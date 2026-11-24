@@ -78,7 +78,10 @@ protected:
 	float KnockbackSpeed = 700.f;
 
 	UPROPERTY(EditAnywhere, Category="Enemy|Ball")
-	FLinearColor BallColor = FLinearColor(0.05f, 0.06f, 0.08f);
+	FLinearColor BallColor = FLinearColor(0.16f, 0.16f, 0.165f);	// grey ball
+
+	UPROPERTY(EditAnywhere, Category="Enemy|Ball")
+	FLinearColor SpikeColor = FLinearColor(0.6f, 0.6f, 0.62f);	// light grey spikes
 
 	/** Color it glows toward while revving up */
 	UPROPERTY(EditAnywhere, Category="Enemy|Ball")

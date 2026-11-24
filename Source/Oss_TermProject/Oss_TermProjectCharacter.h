@@ -314,9 +314,22 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Weapon", meta = (ClampMin = 0, Units = "cm"))
 	float StickGripFromEnd = 30.f;
 
-	/** Stick color */
+	/** Stick color (engine cylinder only) */
 	UPROPERTY(EditAnywhere, Category="Weapon")
 	FLinearColor StickColor = FLinearColor(0.25f, 0.13f, 0.05f);
+
+	/** Weapon model held instead of the plain cylinder stick (real size, +Z = up the weapon, origin = centre of its length,
+	 *  X = edge direction). Its length replaces StickLength; the grip stays StickGripFromEnd from its bottom end.
+	 *  Empty = the old brown cylinder (StickLength x StickDiameter). Default: SM_WoodSword (gen_wood_sword.py). */
+	UPROPERTY(EditAnywhere, Category="Weapon")
+	TObjectPtr<class UStaticMesh> WeaponMesh;
+
+	/** Extra turn of the weapon around its own length (deg), if the edge should face another way */
+	UPROPERTY(EditAnywhere, Category="Weapon")
+	float WeaponRoll = 0.f;
+
+	/** Length of what is in the hand: WeaponMesh's height, else StickLength */
+	float GetWeaponLength() const;
 
 	/** True while the stick is in the hand */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Weapon")
@@ -596,6 +609,16 @@ protected:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="LockOn")
 	TObjectPtr<AActor> LockOnTarget;
 
+	/** On-screen lock-on marker (UMG). Default: /Game/UI/WBP_LockOn (pink ring), falls back to the C++ widget */
+	UPROPERTY(EditAnywhere, Category="LockOn")
+	TSubclassOf<class ULockOnWidget> LockOnWidgetClass;
+
+	UPROPERTY(Transient)
+	TObjectPtr<class ULockOnWidget> LockOnWidget;
+
+	/** Creates the marker widget on first use; null without a local player controller */
+	class ULockOnWidget* GetLockOnWidget();
+
 	/** Q: lock on to the best target in view, or release the lock */
 	void ToggleLockOn();
 
@@ -642,6 +665,51 @@ protected:
 	/** Full-body slot for the rest animations (legs included) */
 	UPROPERTY(EditAnywhere, Category="Bonfire")
 	FName RestSlotName = TEXT("DefaultSlot");
+
+	/** Fade to black (and back) when travelling to the main bonfire */
+	UPROPERTY(EditAnywhere, Category="Bonfire", meta = (ClampMin = 0.05, Units = "s"))
+	float TravelFadeTime = 0.6f;
+
+	/** The bonfire labelled / tagged "Bonfire_Main" (travel target); remembered even while it's streamed out */
+	TWeakObjectPtr<class ABonfire> MainBonfire;
+	FTransform MainBonfireRespawn;
+	bool bKnowsMainBonfire = false;
+
+	/** Fading out / in while travelling (input ignored) */
+	bool bTravelling = false;
+	FTimerHandle TravelTimer;
+	int32 TravelSearchTries = 0;
+
+	/** "Travel to Bonfire_Main" panel shown while resting at another bonfire */
+	TSharedPtr<class SWidget> TravelMenu;
+
+	void ShowTravelMenu();
+	void HideTravelMenu();
+
+	/** Fade-out finished: move to the main bonfire and keep resting there */
+	void ArriveAtMainBonfire();
+
+	/** After arriving: the main bonfire may still be streaming in; becomes the respawn point once found */
+	void AdoptMainBonfire();
+
+	// ---- Save game (only at bonfires) ----
+
+	/** Writes souls, levels, this bonfire and the defeated bosses (called when resting) */
+	void SaveAtBonfire(class ABonfire* Bonfire);
+
+	/** Level start: restores the saved state and moves to the saved bonfire */
+	void LoadFromSave();
+
+	/** Saved bonfire (actor name); becomes LastBonfire once it has streamed in */
+	FName PendingBonfireName;
+	int32 PendingBonfireTries = 0;
+	FTimerHandle PendingBonfireTimer;
+	void AdoptSavedBonfire();
+
+	TSharedPtr<class SWidget> TitleScreen;
+
+	/** Pauses the game and shows Continue / New Game / Quit */
+	void ShowTitleScreen();
 
 	/** Souls carried */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Souls")
@@ -709,6 +777,18 @@ protected:
 	/** Back to life at the last bonfire (or the start), enemies reset */
 	void Respawn();
 
+	/** Mesh waiting to be put on once the swap smoke covers the body */
+	UPROPERTY(Transient)
+	TObjectPtr<class USkeletalMesh> PendingBodyMesh;
+
+	FTimerHandle BodySwapTimer;
+
+	/** Puts PendingBodyMesh on (default materials) and re-grips the stick and the potion */
+	void ApplyPendingBodyMesh();
+
+	/** Stick + potion grips worked out from the current mesh's reference pose (hand_r, knuckles) */
+	void UpdateHandAttachments();
+
 	/** Sets how the character turns: toward the movement direction normally, toward the target while locked on (unless sprinting), not at all while busy */
 	void UpdateRotationMode();
 
@@ -735,6 +815,16 @@ public:
 
 	/** Returns the stats component */
 	FORCEINLINE class UStatsComponent* GetStats() const { return Stats; }
+
+	// ---- Body mesh (AModelSwapVolume) ----
+
+	/** Changes the body to NewMesh (must use the SK_Mannequin skeleton). With smoke: a death-smoke burst covers the
+	 *  player and the mesh changes BodySwapDelay later. Kept through death; saved at bonfires. */
+	void ChangeBodyMesh(class USkeletalMesh* NewMesh, bool bWithSmoke = true);
+
+	/** Seconds between the smoke burst and the mesh change (the smoke has to cover the body first) */
+	UPROPERTY(EditAnywhere, Category="Body Mesh", meta = (ClampMin = 0, Units = "s"))
+	float BodySwapDelay = 0.12f;
 
 	// ---- Souls (currency) ----
 
@@ -784,6 +874,16 @@ public:
 	UFUNCTION(BlueprintPure, Category="Bonfire")
 	bool IsResting() const { return bIsResting; }
 
+	/** While resting at another bonfire: fade out, appear kneeling at Bonfire_Main (it becomes the respawn point) */
+	UFUNCTION(BlueprintCallable, Category="Bonfire")
+	void TravelToMainBonfire();
+
+	/** Bonfire_Main calls this from its BeginPlay (and the player looks for it in its own BeginPlay) */
+	void RegisterMainBonfire(class ABonfire* Bonfire);
+
+	/** Resting somewhere the travel panel offers Bonfire_Main */
+	bool CanTravelToMainBonfire() const;
+
 	/** In the invincible part of a roll (projectiles fly through) */
 	bool IsDodging() const { return IsInvincible(); }
 
@@ -794,6 +894,21 @@ public:
 	/** Console (`): DebugRestore -> full health and stamina */
 	UFUNCTION(Exec)
 	void DebugRestore();
+
+	/** Console (`): DeleteSave -> the next start is a new game */
+	UFUNCTION(Exec)
+	void DeleteSave();
+
+	// ---- Title screen (temporary, TitleScreenWidget) ----
+
+	/** Continue: unpause and play from the loaded save */
+	void CloseTitleScreen();
+
+	/** New Game: delete the save and restart the level (the title is skipped once) */
+	void StartNewGame();
+
+	/** Quit the game (ends PIE in the editor) */
+	void QuitFromTitle();
 
 protected:
 

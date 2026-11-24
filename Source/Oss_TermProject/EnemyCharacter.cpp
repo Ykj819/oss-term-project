@@ -23,6 +23,7 @@
 #include "WolfBoss.h"
 #include "FishmanBoss.h"
 #include "TreeBoss.h"
+#include "DeathSmoke.h"
 
 namespace
 {
@@ -49,11 +50,12 @@ AEnemyCharacter::AEnemyCharacter()
 	Movement->RotationRate = FRotator(0.f, 540.f, 0.f);
 	Movement->MaxWalkSpeed = ChaseSpeed;
 
-	// same mannequin rig and anim blueprint as the player
-	static ConstructorHelpers::FObjectFinder<USkeletalMesh> QuinnMesh(TEXT("/Game/Characters/Mannequins/Meshes/SKM_Quinn_Simple.SKM_Quinn_Simple"));
-	if (QuinnMesh.Succeeded())
+	// plush teddy bear on the mannequin skeleton (same anim blueprint as the player;
+	// made by Export/Blender/scripts/characters/gen_plush_enemies.py, imported by Tools/import_enemy_designs.py)
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> BearMesh(TEXT("/Game/Characters/Enemies/Meshes/SKM_PlushBear.SKM_PlushBear"));
+	if (BearMesh.Succeeded())
 	{
-		GetMesh()->SetSkeletalMeshAsset(QuinnMesh.Object);
+		GetMesh()->SetSkeletalMeshAsset(BearMesh.Object);
 	}
 	static ConstructorHelpers::FClassFinder<UAnimInstance> UnarmedAnimBP(TEXT("/Game/Characters/Mannequins/Anims/Unarmed/ABP_Unarmed"));
 	if (UnarmedAnimBP.Succeeded())
@@ -419,15 +421,10 @@ void AEnemyCharacter::HandleDeath(AActor* DamageCauser)
 		AI->UnPossess();
 	}
 
-	// ragdoll
+	// gone in a puff of white smoke; kept (hidden) instead of destroyed, so a bonfire rest can bring it back
 	GetCharacterMovement()->DisableMovement();
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	GetMesh()->SetCollisionProfileName(TEXT("Ragdoll"));
-	GetMesh()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
-	GetMesh()->SetSimulatePhysics(true);
-
-	// kept (hidden) instead of destroyed, so a bonfire rest can bring it back
-	GetWorldTimerManager().SetTimer(CorpseTimer, this, &AEnemyCharacter::HideCorpse, FMath::Max(CorpseLifeSpan, 0.1f), false);
+	ADeathSmoke::Poof(this);
 }
 
 void AEnemyCharacter::HideCorpse()

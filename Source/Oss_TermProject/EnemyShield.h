@@ -8,6 +8,7 @@
 
 class UStaticMeshComponent;
 class UMaterialInstanceDynamic;
+class UAnimSequenceBase;
 
 UENUM()
 enum class EShieldChargePhase : uint8
@@ -23,7 +24,7 @@ class AEnemyShield : public AEnemyCharacter
 {
 	GENERATED_BODY()
 
-	/** The shield: a plain box held in front of the body */
+	/** The shield: iron tower shield SM_EnemyShield held in both hands (its back grips sit where MM_Shield_* put the hands) */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	UStaticMeshComponent* Shield;
 
@@ -34,6 +35,8 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 
 	/** Hits from in front of the shield are blocked (no damage) */
+	virtual void ResetEnemy() override;
+
 	virtual float TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, class AController* EventInstigator, AActor* DamageCauser) override;
 
 protected:
@@ -45,6 +48,10 @@ protected:
 	/** Shield flashes this color when it blocks */
 	UPROPERTY(EditAnywhere, Category="Enemy|Shield")
 	FLinearColor BlockFlashColor = FLinearColor(1.f, 0.85f, 0.4f);
+
+	/** Emissive strength of the block flash */
+	UPROPERTY(EditAnywhere, Category="Enemy|Shield", meta = (ClampMin = 0))
+	float BlockFlashGlow = 25.f;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> ShieldMID;
@@ -82,19 +89,35 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Enemy|Shield", meta = (ClampMin = 0, Units = "s"))
 	float RecoverTime = 2.f;
 
-	/** Shield box size (thickness, width, height) */
+	/** Shield size (thickness, width, height); the mesh is 10 x 80 x 110 cm */
 	UPROPERTY(EditAnywhere, Category="Enemy|Shield", meta = (Units = "cm"))
 	FVector ShieldSize = FVector(10.f, 80.f, 110.f);
 
-	/** Shield distance in front of the body: normal / pulled back in the wind-up / pushed out in the rush */
+	/** Shield distance in front of the body: hold / pulled in (wind-up) / pushed out (rush). Matches the hands in
+	 *  MM_Shield_Hold / Brace / Push (Export/Blender/scripts/mannequin/build_shield_anims.py prints these) */
 	UPROPERTY(EditAnywhere, Category="Enemy|Shield", meta = (Units = "cm"))
-	FVector ShieldForward = FVector(55.f, 35.f, 70.f);
+	FVector ShieldForward = FVector(38.f, 31.f, 47.f);
 
+	/** Shield centre height above the capsule centre: hold / wind-up / rush (same source as ShieldForward) */
 	UPROPERTY(EditAnywhere, Category="Enemy|Shield", meta = (Units = "cm"))
-	float ShieldHeight = 5.f;
+	FVector ShieldLift = FVector(19.f, 23.f, 15.f);
 
+	/** Multiplies the iron colours */
 	UPROPERTY(EditAnywhere, Category="Enemy|Shield")
-	FLinearColor ShieldColor = FLinearColor(0.18f, 0.12f, 0.07f);
+	FLinearColor ShieldColor = FLinearColor(1.f, 1.f, 1.f);
+
+	/** Upper-body poses (both hands on the shield), played on HoldSlotName */
+	UPROPERTY(EditAnywhere, Category="Enemy|Shield|Animation")
+	TSoftObjectPtr<UAnimSequenceBase> HoldAnim;
+
+	UPROPERTY(EditAnywhere, Category="Enemy|Shield|Animation")
+	TSoftObjectPtr<UAnimSequenceBase> BraceAnim;
+
+	UPROPERTY(EditAnywhere, Category="Enemy|Shield|Animation")
+	TSoftObjectPtr<UAnimSequenceBase> PushAnim;
+
+	UPROPERTY(EditAnywhere, Category="Enemy|Shield|Animation")
+	FName HoldSlotName = TEXT("UpperBody");
 
 	// ---- Runtime ----
 
@@ -112,6 +135,9 @@ protected:
 	void StartRecover();
 
 	void FinishCharge();
+
+	/** Plays one of the shield poses on the upper body (looping) */
+	void PlayShieldPose(const TSoftObjectPtr<UAnimSequenceBase>& Anim, float BlendTime);
 
 	/** Puts the movement back to normal chasing */
 	void RestoreMovement();

@@ -8,6 +8,7 @@
 #include "GameFramework/Pawn.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Oss_TermProjectCharacter.h"
 
@@ -26,6 +27,11 @@ AEnemyProjectile::AEnemyProjectile()
 	{
 		Mesh->SetStaticMesh(SphereMesh.Object);
 	}
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> SolidMat(TEXT("/Game/Characters/Enemies/Materials/M_EnemySolid.M_EnemySolid"));
+	if (SolidMat.Succeeded())
+	{
+		Mesh->SetMaterial(0, SolidMat.Object);
+	}
 }
 
 void AEnemyProjectile::BeginPlay()
@@ -37,7 +43,7 @@ void AEnemyProjectile::BeginPlay()
 	Mesh->SetWorldScale3D(FVector(D * FMath::FRandRange(0.9f, 1.15f), D * FMath::FRandRange(0.8f, 1.f), D * FMath::FRandRange(0.7f, 0.9f)));
 	if (UMaterialInstanceDynamic* MID = Mesh->CreateDynamicMaterialInstance(0))
 	{
-		MID->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.09f, 0.08f, 0.07f));
+		MID->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.008f, 0.008f, 0.009f));	// black
 	}
 	Spin = FRotator(FMath::FRandRange(-720.f, 720.f), FMath::FRandRange(-360.f, 360.f), FMath::FRandRange(-720.f, 720.f));
 

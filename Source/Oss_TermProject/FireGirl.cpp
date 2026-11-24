@@ -1,13 +1,22 @@
-// FireGirl: standing NPC; talk to her (E) to level up with souls. Doesn't move.
+// FireGirl: NPC sitting on a stool; talk to her (E) to level up with souls. Doesn't move.
 
 #include "FireGirl.h"
 #include "Oss_TermProjectCharacter.h"
 #include "StatsComponent.h"
-#include "Animation/AnimSequenceBase.h"
 #include "Components/CapsuleComponent.h"
-#include "Components/SkeletalMeshComponent.h"
-#include "Engine/SkeletalMesh.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 #include "UObject/ConstructorHelpers.h"
+#include "BossProgressSubsystem.h"
+#include "DeathSmoke.h"
+#include "Kismet/GameplayStatics.h"
+
+namespace
+{
+	// same half height as the old standing capsule, so actors already placed in the map keep their feet on the floor
+	constexpr float CapsuleRadius = 45.f;
+	constexpr float CapsuleHalfHeight = 96.f;
+}
 
 AFireGirl::AFireGirl()
 {
@@ -15,32 +24,64 @@ AFireGirl::AFireGirl()
 
 	Capsule = CreateDefaultSubobject<UCapsuleComponent>(TEXT("Capsule"));
 	RootComponent = Capsule;
-	Capsule->InitCapsuleSize(42.f, 96.f);
+	Capsule->InitCapsuleSize(CapsuleRadius, CapsuleHalfHeight);
 	Capsule->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 	Capsule->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 
-	// placeholder look: the Quinn mannequin
-	Mesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("Mesh"));
-	Mesh->SetupAttachment(Capsule);
-	Mesh->SetRelativeLocationAndRotation(FVector(0.f, 0.f, -96.f), FRotator(0.f, -90.f, 0.f));
-	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	static ConstructorHelpers::FObjectFinder<USkeletalMesh> QuinnMesh(TEXT("/Game/Characters/Mannequins/Meshes/SKM_Quinn_Simple.SKM_Quinn_Simple"));
-	if (QuinnMesh.Succeeded())
+	// Meshes face +Y (like the mannequin): yaw -90 turns them to the actor's forward (+X). Pivot = floor under her hips;
+	// her knees reach ~55 cm forward, so shift back 20 cm to centre her + the stool in the capsule.
+	const FVector MeshOffset(-20.f, 0.f, -CapsuleHalfHeight);
+	const FRotator MeshRotation(0.f, -90.f, 0.f);
+
+	Body = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Body"));
+	Body->SetupAttachment(Capsule);
+	Body->SetRelativeLocationAndRotation(MeshOffset, MeshRotation);
+	Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> GirlMesh(TEXT("/Game/Characters/FireGirl/SM_FireGirl.SM_FireGirl"));
+	if (GirlMesh.Succeeded())
 	{
-		Mesh->SetSkeletalMeshAsset(QuinnMesh.Object);
+		Body->SetStaticMesh(GirlMesh.Object);
 	}
 
-	IdleAnimation = TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(TEXT("/Game/Characters/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle")));
+	Stool = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Stool"));
+	Stool->SetupAttachment(Capsule);
+	Stool->SetRelativeLocationAndRotation(MeshOffset, MeshRotation);
+	Stool->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> StoolMesh(TEXT("/Game/Characters/FireGirl/SM_FireGirl_Stool.SM_FireGirl_Stool"));
+	if (StoolMesh.Succeeded())
+	{
+		Stool->SetStaticMesh(StoolMesh.Object);
+	}
 }
 
 void AFireGirl::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (UAnimSequenceBase* Anim = IdleAnimation.LoadSynchronous())
+	const UBossProgressSubsystem* Progress = GetWorld()->GetSubsystem<UBossProgressSubsystem>();
+	if (Progress && Progress->AreAllBossesDefeated())
 	{
-		Mesh->PlayAnimation(Anim, true);
+		Destroy();
 	}
+}
+
+void AFireGirl::Vanish()
+{
+	if (IsHidden())
+	{
+		return;
+	}
+	// close the level-up menu if it is open with her
+	if (AOss_TermProjectCharacter* Player = Cast<AOss_TermProjectCharacter>(UGameplayStatics::GetPlayerPawn(this, 0)))
+	{
+		if (Player->IsInLevelUpMenu())
+		{
+			Player->CloseLevelUpMenu();
+		}
+	}
+	Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ADeathSmoke::Poof(this);	// hides her at once, smoke covers the body
+	SetLifeSpan(3.f);
 }
 
 bool AFireGirl::CanInteract_Implementation(AActor* Interactor) const

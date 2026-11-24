@@ -41,7 +41,7 @@ AEnemyRanged::AEnemyRanged()
 	SoulReward = 12;
 
 	bTintBody = true;
-	BodyTint = FLinearColor(0.35f, 0.24f, 0.12f);
+	BodyTint = FLinearColor(1.35f, 1.3f, 1.25f);	// same plush bear, lighter
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereMesh(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
@@ -92,7 +92,7 @@ void AEnemyRanged::BeginPlay()
 
 	if (UMaterialInstanceDynamic* MID = HeldRock->CreateDynamicMaterialInstance(0))
 	{
-		MID->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.09f, 0.08f, 0.07f));
+		MID->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.008f, 0.008f, 0.009f));	// black, like the thrown projectile
 	}
 	if (UMaterialInstanceDynamic* MID = Pouch->CreateDynamicMaterialInstance(0))
 	{

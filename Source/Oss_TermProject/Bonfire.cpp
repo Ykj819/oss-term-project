@@ -1,4 +1,4 @@
-// Bonfire (rest point): interact (E) to restore health, stamina and potions. Temporary look: a glowing box
+// Bonfire (rest point): interact (E) to restore health, stamina and potions. Look: SM_Bonfire + flickering SM_BonfireFlame
 
 #include "Bonfire.h"
 #include "Oss_TermProjectCharacter.h"
@@ -12,6 +12,7 @@
 #include "TimerManager.h"
 #include "Engine/Engine.h"
 #include "Kismet/GameplayStatics.h"
+#include "EngineUtils.h"
 
 ABonfire::ABonfire()
 {
@@ -25,10 +26,21 @@ ABonfire::ABonfire()
 	Body->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 	Body->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
-	if (CubeMesh.Succeeded())
+	// pivots of both meshes = centre of the fire on the floor
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> BonfireMesh(TEXT("/Game/Environment/Props/SM_Bonfire.SM_Bonfire"));
+	if (BonfireMesh.Succeeded())
 	{
-		Body->SetStaticMesh(CubeMesh.Object);
+		Body->SetStaticMesh(BonfireMesh.Object);
+	}
+
+	Flame = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Flame"));
+	Flame->SetupAttachment(RootComponent);
+	Flame->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Flame->SetCastShadow(false);
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> FlameMesh(TEXT("/Game/Environment/Props/SM_BonfireFlame.SM_BonfireFlame"));
+	if (FlameMesh.Succeeded())
+	{
+		Flame->SetStaticMesh(FlameMesh.Object);
 	}
 
 	Glow = CreateDefaultSubobject<UPointLightComponent>(TEXT("Glow"));
@@ -41,10 +53,9 @@ void ABonfire::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
 
-	// engine cube is 100cm and centered: scale it and lift it so the actor's origin sits on the floor
-	Body->SetRelativeScale3D(Size / 100.f);
-	Body->SetRelativeLocation(FVector(0.f, 0.f, Size.Z * 0.5f));
-	Glow->SetRelativeLocation(FVector(0.f, 0.f, Size.Z + 60.f));
+	Body->SetRelativeScale3D(FVector::OneVector);
+	Body->SetRelativeLocation(FVector::ZeroVector);
+	Glow->SetRelativeLocation(FVector(0.f, 0.f, 70.f));		// middle of the flame
 	Glow->SetLightColor(Color);
 	Glow->SetIntensity(GlowIntensity);
 }
@@ -53,10 +64,58 @@ void ABonfire::BeginPlay()
 {
 	Super::BeginPlay();
 
-	BodyMaterial = Body->CreateDynamicMaterialInstance(0);
-	if (BodyMaterial)
+	FlameMaterial = Flame->CreateDynamicMaterialInstance(0);
+	SetFireIntensity(GetBaseIntensity());
+
+	// the player remembers where the hub bonfire is (it may stream out later)
+	if (IsMainBonfire())
 	{
-		BodyMaterial->SetVectorParameterValue(TEXT("Color"), Color);
+		if (AOss_TermProjectCharacter* Player = Cast<AOss_TermProjectCharacter>(UGameplayStatics::GetPlayerPawn(this, 0)))
+		{
+			Player->RegisterMainBonfire(this);
+		}
+	}
+}
+
+bool ABonfire::IsMainBonfire() const
+{
+	static const FName MainName(TEXT("Bonfire_Main"));
+	if (ActorHasTag(MainName))
+	{
+		return true;
+	}
+#if WITH_EDITOR
+	if (GetActorLabel() == MainName.ToString())
+	{
+		return true;
+	}
+#endif
+	return false;
+}
+
+ABonfire* ABonfire::FindMainBonfire(const UWorld* World)
+{
+	if (World)
+	{
+		for (TActorIterator<ABonfire> It(World); It; ++It)
+		{
+			if (It->IsMainBonfire())
+			{
+				return *It;
+			}
+		}
+	}
+	return nullptr;
+}
+
+void ABonfire::SetFireIntensity(float LightIntensity)
+{
+	Glow->SetIntensity(LightIntensity);
+	if (FlameMaterial)
+	{
+		// the flame brightens less than the light (sqrt: x1.4 when focused, x2.6 at the rest flash)
+		const float Ratio = GlowIntensity > 0.f ? LightIntensity / GlowIntensity : 1.f;
+		FlameMaterial->SetScalarParameterValue(TEXT("Glow"), FlameGlow * FMath::Sqrt(FMath::Max(Ratio, 0.f)));
 	}
 }
 
@@ -86,7 +145,7 @@ void ABonfire::Interact_Implementation(AActor* Interactor)
 
 	// brief light flash as feedback
 	FlashStartTime = GetWorld()->GetTimeSeconds();
-	Glow->SetIntensity(RestFlashIntensity);
+	SetFireIntensity(RestFlashIntensity);
 	GetWorldTimerManager().SetTimer(FlashTimer, this, &ABonfire::UpdateFlash, 1.f / 60.f, true);
 
 	if (GEngine)
@@ -101,7 +160,7 @@ void ABonfire::Interact_Implementation(AActor* Interactor)
 void ABonfire::UpdateFlash()
 {
 	const float Alpha = FMath::Clamp((GetWorld()->GetTimeSeconds() - FlashStartTime) / RestFlashDuration, 0.f, 1.f);
-	Glow->SetIntensity(FMath::Lerp(RestFlashIntensity, GetBaseIntensity(), Alpha));
+	SetFireIntensity(FMath::Lerp(RestFlashIntensity, GetBaseIntensity(), Alpha));
 	if (Alpha >= 1.f)
 	{
 		GetWorldTimerManager().ClearTimer(FlashTimer);
@@ -129,6 +188,6 @@ void ABonfire::SetInteractionFocus_Implementation(AActor* Interactor, bool bInFo
 	bFocused = bInFocused;
 	if (!GetWorldTimerManager().IsTimerActive(FlashTimer))
 	{
-		Glow->SetIntensity(GetBaseIntensity());
+		SetFireIntensity(GetBaseIntensity());
 	}
 }

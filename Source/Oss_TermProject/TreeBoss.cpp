@@ -1,6 +1,7 @@
-// Autumn tree boss: stationary, branch attacks in front, root spikes everywhere else, phase 2 leaf storm.
+﻿// Autumn tree boss: stationary, branch attacks in front, root spikes everywhere else, phase 2 leaf storm.
 
 #include "TreeBoss.h"
+#include "DeathSmoke.h"
 #include "RootSpike.h"
 #include "StatsComponent.h"
 #include "BossHealthBar.h"
@@ -24,6 +25,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
+#include "BossProgressSubsystem.h"
 
 namespace
 {
@@ -88,7 +90,9 @@ ATreeBoss::ATreeBoss()
 	PP.bOverride_DepthOfFieldMinFstop = true;
 	PP.DepthOfFieldMinFstop = 1.2f;
 
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
+	// leaf cards: yellow ginkgo / red maple / brown leaf, picked per instance by custom data 0 in M_StormLeaf
+	// (Export/Blender/scripts/props/gen_storm_leaves.py, Tools/import_storm_leaves.py)
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> LeafMesh(TEXT("/Game/Characters/Tree/Storm/SM_StormLeaf.SM_StormLeaf"));
 	StormLeaves = CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("StormLeaves"));
 	StormLeaves->SetupAttachment(RootComponent);
 	StormLeaves->SetUsingAbsoluteLocation(true);
@@ -98,9 +102,10 @@ ATreeBoss::ATreeBoss()
 	StormLeaves->SetGenerateOverlapEvents(false);
 	StormLeaves->SetCastShadow(false);
 	StormLeaves->SetCanEverAffectNavigation(false);
-	if (CubeMesh.Succeeded())
+	StormLeaves->NumCustomDataFloats = 1;
+	if (LeafMesh.Succeeded())
 	{
-		StormLeaves->SetStaticMesh(CubeMesh.Object);
+		StormLeaves->SetStaticMesh(LeafMesh.Object);
 	}
 
 	IdleAnim = TreeAnim(TEXT("Tree_Idle"));
@@ -118,6 +123,16 @@ ATreeBoss::ATreeBoss()
 void ATreeBoss::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// already beaten in the save game: stays gone
+	if (const UBossProgressSubsystem* Progress = GetWorld()->GetSubsystem<UBossProgressSubsystem>())
+	{
+		if (Progress->IsBossDefeated(TEXT("Tree")))
+		{
+			Destroy();
+			return;
+		}
+	}
 
 	if (UClass* Class = AnimClass.LoadSynchronous())
 	{
@@ -141,10 +156,6 @@ void ATreeBoss::BeginPlay()
 	}
 
 	StormLeaves->SetWorldTransform(FTransform::Identity);
-	if (UMaterialInstanceDynamic* LeafMaterial = StormLeaves->CreateDynamicMaterialInstance(0))
-	{
-		LeafMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.75f, 0.2f, 0.03f));
-	}
 
 	Stats->SetMaxHealth(BossHealth);
 	Stats->RestoreAll();
@@ -548,7 +559,12 @@ void ATreeBoss::SetStorm(bool bOn)
 			RespawnLeaf(Leaf, Center, true);
 			Transforms.Add(FTransform(Leaf.Position));
 		}
+		StormLeaves->NumCustomDataFloats = 1;
 		StormLeaves->AddInstances(Transforms, false, true);
+		for (int32 i = 0; i < Leaves.Num(); ++i)
+		{
+			StormLeaves->SetCustomDataValue(i, 0, static_cast<float>(FMath::RandRange(0, 2)), false);	// 0 ginkgo, 1 maple, 2 brown
+		}
 		StormLeaves->SetVisibility(true);
 	}
 }
@@ -616,7 +632,7 @@ void ATreeBoss::UpdateStorm(float DeltaSeconds)
 			RespawnLeaf(Leaf, Center, false);
 		}
 
-		Transforms[i] = FTransform(FQuat(Leaf.SpinAxis, Leaf.Spin), Leaf.Position, FVector(0.26f, 0.18f, 0.008f) * Size);
+		Transforms[i] = FTransform(FQuat(Leaf.SpinAxis, Leaf.Spin), Leaf.Position, FVector(0.24f) * Size);
 	}
 	StormLeaves->BatchUpdateInstancesTransforms(0, Transforms, true, true, true);
 }
@@ -652,6 +668,10 @@ float ATreeBoss::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent,
 void ATreeBoss::HandleDeath(AActor* DamageCauser)
 {
 	State = ETreeState::Dead;
+	if (UBossProgressSubsystem* Progress = GetWorld()->GetSubsystem<UBossProgressSubsystem>())
+	{
+		Progress->NotifyBossDefeated(TEXT("Tree"));
+	}
 	CurrentAction = ETreeAction::None;
 	CurrentLoop = nullptr;
 	ClearActionTimers();
@@ -677,6 +697,10 @@ void ATreeBoss::HandleDeath(AActor* DamageCauser)
 
 	ShowHealthBar(false);
 	Tags.Remove(TEXT("LockOnTarget"));
+
+	// gone in a puff of white smoke (bosses stay dead)
+	ADeathSmoke::Poof(this);
+	SetActorEnableCollision(false);
 
 	if (GEngine)
 	{

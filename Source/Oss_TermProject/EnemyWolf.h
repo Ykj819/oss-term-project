@@ -66,6 +66,14 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Enemy|Wolf|Setup", meta = (ClampMin = 0.1))
 	float MaxRunAnimRate = 2.f;
 
+	/** Multiplies the boss's near-black fur texture (M_Wolf "Tint"; linear albedo ~0.03) -> grey. White (1,1,1) = boss colour */
+	UPROPERTY(EditAnywhere, Category="Enemy|Wolf|Look")
+	FLinearColor FurTint = FLinearColor(5.5f, 5.8f, 6.2f);
+
+	/** Eye emissive strength (M_WolfEye "EyeGlow"; the boss uses 8) */
+	UPROPERTY(EditAnywhere, Category="Enemy|Wolf|Look", meta = (ClampMin = 0))
+	float EyeGlow = 2.f;
+
 	// ---- Stats ----
 
 	UPROPERTY(EditAnywhere, Category="Enemy|Wolf", meta = (ClampMin = 1))

@@ -1,6 +1,7 @@
 ﻿// Giant wolf boss: circles the player, claws / bites in reach, charges from afar, leaps back when crowded.
 
 #include "WolfBoss.h"
+#include "DeathSmoke.h"
 #include "WolfAnimInstance.h"
 #include "StatsComponent.h"
 #include "BossHealthBar.h"
@@ -21,6 +22,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
+#include "BossProgressSubsystem.h"
 
 namespace
 {
@@ -103,6 +105,16 @@ AWolfBoss::AWolfBoss()
 void AWolfBoss::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// already beaten in the save game: stays gone
+	if (const UBossProgressSubsystem* Progress = GetWorld()->GetSubsystem<UBossProgressSubsystem>())
+	{
+		if (Progress->IsBossDefeated(TEXT("Wolf")))
+		{
+			Destroy();
+			return;
+		}
+	}
 
 	if (UClass* Class = AnimClass.LoadSynchronous())
 	{
@@ -663,6 +675,10 @@ void AWolfBoss::HandleDeath(AActor* DamageCauser)
 {
 	Weather->SetWeatherActive(false);	// the snow fades out
 	State = EWolfState::Dead;
+	if (UBossProgressSubsystem* Progress = GetWorld()->GetSubsystem<UBossProgressSubsystem>())
+	{
+		Progress->NotifyBossDefeated(TEXT("Wolf"));
+	}
 	CurrentAction = EWolfAction::None;
 	QueuedAction = EWolfAction::None;
 	CurrentLoop = nullptr;
@@ -701,6 +717,10 @@ void AWolfBoss::HandleDeath(AActor* DamageCauser)
 	GetMesh()->SetCollisionProfileName(TEXT("Ragdoll"));
 	GetMesh()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	GetMesh()->SetSimulatePhysics(true);
+
+	// gone in a puff of white smoke (bosses stay dead)
+	ADeathSmoke::Poof(this);
+	SetActorEnableCollision(false);
 
 	if (GEngine)
 	{

@@ -47,7 +47,7 @@ protected:
 
 	/** Fog radius once it has noticed the player */
 	UPROPERTY(EditAnywhere, Category="Enemy|Fog Tree", meta = (ClampMin = 0, Units = "cm"))
-	float FogRadius = 700.f;
+	float FogRadius = 350.f;	// was 700 (diameter halved 2026-11-23)
 
 	/** Size of the mist at rest (part of FogRadius) - it already hurts */
 	UPROPERTY(EditAnywhere, Category="Enemy|Fog Tree", meta = (ClampMin = 0, ClampMax = 1))
@@ -69,10 +69,10 @@ protected:
 	float FogDamageInterval = 0.5f;
 
 	UPROPERTY(EditAnywhere, Category="Enemy|Fog Tree")
-	FLinearColor FogColor = FLinearColor(0.92f, 0.93f, 0.95f, 0.16f);
+	FLinearColor FogColor = FLinearColor(0.85f, 0.87f, 0.9f, 0.3f);
 
 	UPROPERTY(EditAnywhere, Category="Enemy|Fog Tree")
-	FLinearColor BarkColor = FLinearColor(0.11f, 0.095f, 0.08f);
+	FLinearColor BarkColor = FLinearColor(0.8f, 0.8f, 0.8f);	// multiplies the bark texture
 
 	// ---- Runtime ----
 

@@ -108,7 +108,7 @@ protected:
 	TArray<FVector> AttachSpots;
 
 	UPROPERTY(EditAnywhere, Category="Enemy|Leech")
-	FLinearColor BodyColor = FLinearColor(0.045f, 0.05f, 0.03f);
+	FLinearColor BodyColor = FLinearColor(0.012f, 0.018f, 0.04f);	// blue-black
 
 	UPROPERTY(EditAnywhere, Category="Enemy|Leech")
 	FLinearColor MouthColor = FLinearColor(0.35f, 0.02f, 0.02f);

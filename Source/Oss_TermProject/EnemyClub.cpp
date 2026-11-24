@@ -35,6 +35,13 @@ AEnemyClub::AEnemyClub()
 	GetMesh()->SetRelativeLocation(FVector(0.f, 0.f, -BaseHalfHeight * S));
 	GetMesh()->SetRelativeScale3D(FVector(S));
 
+	// plush bunny (mannequin skeleton) instead of the base class's bear
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> BunnyMesh(TEXT("/Game/Characters/Enemies/Meshes/SKM_PlushBunny.SKM_PlushBunny"));
+	if (BunnyMesh.Succeeded())
+	{
+		GetMesh()->SetSkeletalMeshAsset(BunnyMesh.Object);
+	}
+
 	// heavy and slow; hits don't interrupt it (super armor)
 	bFlinchOnHit = false;
 	ChaseSpeed = 220.f;
@@ -50,7 +57,7 @@ AEnemyClub::AEnemyClub()
 	HealthBarHeight = 190.f;
 	HealthBarSize = FVector2D(130.f, 9.f);
 	bTintBody = true;
-	BodyTint = FLinearColor(0.22f, 0.17f, 0.13f);
+	BodyTint = FLinearColor(1.f, 1.f, 1.f);	// plush bunny mesh: white from its vertex colours
 
 	// no fist attacks
 	AttackAnimations.Reset();
@@ -61,42 +68,25 @@ AEnemyClub::AEnemyClub()
 	SweepBackAnim = ClubAnim(TEXT("MM_Club_Sweep_Back"));
 	SlamAnim = ClubAnim(TEXT("MM_Club_Slam"));
 
-	// ---- club: engine cylinders / sphere along ClubRoot's Z (origin = right-hand grip), sized like the Blender preview ----
+	// ---- club: wooden bat SM_ClubBat along ClubRoot's Z (mesh origin = right-hand grip, 160 cm long, grip 30 cm from the knob;
+	// made by Export/Blender/scripts/props/gen_enemy_props.py). The hand closes around it (mitten hands, the bat passes through) ----
 	ClubRoot = CreateDefaultSubobject<USceneComponent>(TEXT("ClubRoot"));
 	ClubRoot->SetupAttachment(GetMesh(), TEXT("hand_r"));
 
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> CylinderMesh(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereMesh(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-	const float Grip = ClubGripFromEnd;
-	const float Top = ClubLength - ClubGripFromEnd;	// head end, above the grip
-	struct FPart { bool bSphere; float Z0; float Z1; float Radius; };
-	const FPart Parts[] = {
-		{ false, -Grip, 25.f, 3.1f },				// handle
-		{ false, 20.f, 70.f, 5.5f },				// swelling
-		{ false, 65.f, Top - 7.f, 7.5f },			// head
-		{ true, Top - 7.f, Top - 7.f, 8.f },		// rounded end
-	};
-	for (int32 i = 0; i < UE_ARRAY_COUNT(Parts); ++i)
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> BatMesh(TEXT("/Game/Characters/Enemies/Meshes/SM_ClubBat.SM_ClubBat"));
+	UStaticMeshComponent* Bat = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ClubBat"));
+	Bat->SetupAttachment(ClubRoot);
+	Bat->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Bat->SetGenerateOverlapEvents(false);
+	Bat->SetCanEverAffectNavigation(false);
+	if (BatMesh.Succeeded())
 	{
-		const FPart& P = Parts[i];
-		UStaticMeshComponent* Part = CreateDefaultSubobject<UStaticMeshComponent>(*FString::Printf(TEXT("ClubPart%d"), i));
-		Part->SetupAttachment(ClubRoot);
-		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Part->SetGenerateOverlapEvents(false);
-		Part->SetCanEverAffectNavigation(false);
-		UStaticMesh* ShapeMesh = P.bSphere ? SphereMesh.Object : CylinderMesh.Object;
-		if (ShapeMesh)
-		{
-			Part->SetStaticMesh(ShapeMesh);
-		}
-		// engine shapes are 100cm wide / tall, centered
-		const float Length = P.bSphere ? P.Radius * 2.f : (P.Z1 - P.Z0);
-		Part->SetRelativeLocation(FVector(0.f, 0.f, (P.Z0 + P.Z1) * 0.5f));
-		Part->SetRelativeScale3D(FVector(P.Radius * 2.f / 100.f, P.Radius * 2.f / 100.f, Length / 100.f));
-		ClubParts.Add(Part);
+		Bat->SetStaticMesh(BatMesh.Object);
 	}
+	// the mesh is 160 cm with the grip 30 cm from the end: stretch along Z if ClubLength is changed
+	Bat->SetRelativeScale3D(FVector(1.f, 1.f, ClubLength / 160.f));
+	ClubParts.Add(Bat);
 }
-
 void AEnemyClub::BeginPlay()
 {
 	// size first: the base class remembers the mesh setup for resets
@@ -116,6 +106,19 @@ void AEnemyClub::BeginPlay()
 	for (TSoftObjectPtr<UAnimSequenceBase>* Anim : { &IdleAnim, &SweepAnim, &SweepBackAnim, &SlamAnim })
 	{
 		Anim->LoadSynchronous();
+	}
+
+	// placed actors saved this array when it held the old engine-shape parts (now deleted -> null entries): rebuild it
+	ClubParts.Reset();
+	{
+		TInlineComponentArray<UStaticMeshComponent*> Comps(this);
+		for (UStaticMeshComponent* Comp : Comps)
+		{
+			if (Comp && Comp->GetFName() == TEXT("ClubBat"))
+			{
+				ClubParts.Add(Comp);
+			}
+		}
 	}
 
 	for (UStaticMeshComponent* Part : ClubParts)

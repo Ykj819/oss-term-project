@@ -13,6 +13,7 @@
 #include "GameFramework/DamageType.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Oss_TermProjectCharacter.h"
 
@@ -48,8 +49,15 @@ AEnemyBall::AEnemyBall()
 	BallPivot->SetupAttachment(RootComponent);
 	BallPivot->SetUsingAbsoluteRotation(true);
 
-	auto Configure = [](UStaticMeshComponent* Part)
+	// project material (param Color): the engine shapes' default BasicShapeMaterial showed the grey grid
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> SolidMat(TEXT("/Game/Characters/Enemies/Materials/M_EnemySolid.M_EnemySolid"));
+	UMaterialInterface* Solid = SolidMat.Succeeded() ? SolidMat.Object : nullptr;
+	auto Configure = [Solid](UStaticMeshComponent* Part)
 	{
+		if (Solid)
+		{
+			Part->SetMaterial(0, Solid);
+		}
 		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Part->SetGenerateOverlapEvents(false);
 		Part->SetCanEverAffectNavigation(false);
@@ -392,12 +400,12 @@ void AEnemyBall::RollBall(const FVector& Velocity, float DeltaSeconds)
 
 void AEnemyBall::SetGlow(float Alpha)
 {
-	const FLinearColor Color = FMath::Lerp(BallColor, WarningColor, FMath::Clamp(Alpha, 0.f, 1.f));
-	for (UMaterialInstanceDynamic* MID : BallMaterials)
+	// first material = the ball, the rest = spikes; fixed colours (no red rev-up glow)
+	for (int32 i = 0; i < BallMaterials.Num(); ++i)
 	{
-		if (MID)
+		if (UMaterialInstanceDynamic* MID = BallMaterials[i])
 		{
-			MID->SetVectorParameterValue(TEXT("Color"), Color);
+			MID->SetVectorParameterValue(TEXT("Color"), i == 0 ? BallColor : SpikeColor);
 		}
 	}
 }

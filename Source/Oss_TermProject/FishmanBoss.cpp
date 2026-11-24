@@ -1,6 +1,7 @@
 ﻿// Fishman boss: a 2x scaled mannequin brawler (slam, jump shockwave, foot stomps).
 
 #include "FishmanBoss.h"
+#include "DeathSmoke.h"
 #include "StatsComponent.h"
 #include "BossHealthBar.h"
 #include "MeleeHitComponent.h"
@@ -19,6 +20,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
+#include "BossProgressSubsystem.h"
 
 namespace
 {
@@ -93,6 +95,16 @@ AFishmanBoss::AFishmanBoss()
 void AFishmanBoss::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// already beaten in the save game: stays gone
+	if (const UBossProgressSubsystem* Progress = GetWorld()->GetSubsystem<UBossProgressSubsystem>())
+	{
+		if (Progress->IsBossDefeated(TEXT("Fishman")))
+		{
+			Destroy();
+			return;
+		}
+	}
 
 	for (TSoftObjectPtr<UAnimSequenceBase>* Anim : { &SlamAnim, &JumpSlamAnim, &StompRightAnim, &StompLeftAnim })
 	{
@@ -521,6 +533,10 @@ void AFishmanBoss::HandleDeath(AActor* DamageCauser)
 {
 	Weather->SetWeatherActive(false);	// the rain stops slowly
 	State = EFishmanState::Dead;
+	if (UBossProgressSubsystem* Progress = GetWorld()->GetSubsystem<UBossProgressSubsystem>())
+	{
+		Progress->NotifyBossDefeated(TEXT("Fishman"));
+	}
 	CurrentAction = EFishmanAction::None;
 	QueuedAction = EFishmanAction::None;
 	SetLocomotionRate(false);
@@ -553,6 +569,10 @@ void AFishmanBoss::HandleDeath(AActor* DamageCauser)
 	GetMesh()->SetCollisionProfileName(TEXT("Ragdoll"));
 	GetMesh()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	GetMesh()->SetSimulatePhysics(true);
+
+	// gone in a puff of white smoke (bosses stay dead)
+	ADeathSmoke::Poof(this);
+	SetActorEnableCollision(false);
 
 	if (GEngine)
 	{

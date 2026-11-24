@@ -40,12 +40,22 @@ ARootSpike::ARootSpike()
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CylinderMesh(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> ConeMesh(TEXT("/Engine/BasicShapes/Cone.Cone"));
 
+	// the tree boss's own bark on the warning disc and the spikes (Tools/create_root_spike_material.py)
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> BarkMat(TEXT("/Game/Characters/Tree/Materials/M_RootSpike.M_RootSpike"));
+
 	Warning = MakePart(this, TEXT("Warning"), CylinderMesh.Object, RootComponent);
 	Warning->SetCastShadow(false);
-
+	if (BarkMat.Succeeded())
+	{
+		Warning->SetMaterial(0, BarkMat.Object);
+	}
 	for (int32 i = 0; i < NumSpikes; ++i)
 	{
 		UStaticMeshComponent* Spike = MakePart(this, *FString::Printf(TEXT("Spike%d"), i), ConeMesh.Object, RootComponent);
+		if (BarkMat.Succeeded())
+		{
+			Spike->SetMaterial(0, BarkMat.Object);
+		}
 		Spike->SetHiddenInGame(true);
 		Spikes.Add(Spike);
 	}
@@ -61,7 +71,7 @@ void ARootSpike::BeginPlay()
 	WarningMaterial = Warning->CreateDynamicMaterialInstance(0);
 	if (WarningMaterial)
 	{
-		WarningMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.35f, 0.06f, 0.01f));
+		WarningMaterial->SetScalarParameterValue(TEXT("Glow"), 1.f);
 	}
 
 	// one tall spike in the middle, smaller ones leaning out around it (engine cone: 100 wide, 100 tall, centered, points +Z)
@@ -83,10 +93,6 @@ void ARootSpike::BeginPlay()
 		}
 		SpikeTargets.Add(T);
 
-		if (UMaterialInstanceDynamic* M = Spikes[i]->CreateDynamicMaterialInstance(0))
-		{
-			M->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.16f, 0.09f, 0.04f));
-		}
 	}
 }
 
@@ -97,12 +103,12 @@ void ARootSpike::Tick(float DeltaSeconds)
 
 	if (Age < WarnTime)
 	{
-		// the circle brightens and pulses faster as the spikes get close
+		// the bark circle glows orange and pulses faster as the spikes get close
 		const float T = Age / WarnTime;
 		const float Pulse = 0.5f + 0.5f * FMath::Sin(Age * (8.f + 22.f * T));
 		if (WarningMaterial)
 		{
-			WarningMaterial->SetVectorParameterValue(TEXT("Color"), FMath::Lerp(FLinearColor(0.35f, 0.06f, 0.01f), FLinearColor(1.f, 0.35f, 0.05f), T * (0.6f + 0.4f * Pulse)));
+			WarningMaterial->SetScalarParameterValue(TEXT("Glow"), FMath::Lerp(1.f, 8.f, T * (0.6f + 0.4f * Pulse)));
 		}
 		return;
 	}

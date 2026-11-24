@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Oss_TermProjectCharacter.h"
 #include "Engine/LocalPlayer.h"
@@ -42,7 +42,21 @@
 #include "LevelUpMenuWidget.h"
 #include "EnemyCharacter.h"
 #include "EnemyLeech.h"
+#include "LockOnWidget.h"
+#include "DeathSmoke.h"
 #include "Materials/MaterialParameterCollection.h"
+#include "Camera/PlayerCameraManager.h"
+#include "SoulsSaveGame.h"
+#include "TitleScreenWidget.h"
+#include "Kismet/KismetSystemLibrary.h"
+#include "BossProgressSubsystem.h"
+#include "Styling/CoreStyle.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Text/STextBlock.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 
 namespace
@@ -136,8 +150,22 @@ AOss_TermProjectCharacter::AOss_TermProjectCharacter()
 	{
 		StickMesh->SetStaticMesh(CylinderMesh.Object);
 	}
+	// the weapon model actually held (BeginPlay puts it on StickMesh; empty = the cylinder above)
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> WoodSword(TEXT("/Game/Characters/PlayerKnight/Weapon/SM_WoodSword.SM_WoodSword"));
+	if (WoodSword.Succeeded())
+	{
+		WeaponMesh = WoodSword.Object;
+	}
 
 	// Lock-on marker: small sphere placed in world space on the target's surface facing the camera
+	// lock-on marker: on-screen UMG widget (the old 3D sphere LockOnMarker below stays hidden)
+	LockOnWidgetClass = ULockOnWidget::StaticClass();
+	static ConstructorHelpers::FClassFinder<ULockOnWidget> LockOnWidgetBP(TEXT("/Game/UI/WBP_LockOn"));
+	if (LockOnWidgetBP.Succeeded())
+	{
+		LockOnWidgetClass = LockOnWidgetBP.Class;
+	}
+
 	LockOnMarker = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("LockOnMarker"));
 	LockOnMarker->SetupAttachment(RootComponent);
 	LockOnMarker->SetUsingAbsoluteLocation(true);
@@ -206,37 +234,29 @@ void AOss_TermProjectCharacter::BeginPlay()
 	MeshCollisionProfile = GetMesh()->GetCollisionProfileName();
 	CapsuleCollision = GetCapsuleComponent()->GetCollisionEnabled();
 
+	// travel target (if it is loaded already; otherwise it registers itself when it streams in)
+	if (ABonfire* Main = ABonfire::FindMainBonfire(GetWorld()))
+	{
+		RegisterMainBonfire(Main);
+	}
+
 	// level 1 values (leveling adds on top)
 	BaseMaxHealth = Stats->GetMaxHealth();
 	BaseMaxStamina = Stats->GetMaxStamina();
 
-	// potion bottle in the right fist: upright along the knuckle line, like the stick grip
+	// continue from the last bonfire save (stats, position)
+	LoadFromSave();
+
+	// title screen once the controller has possessed us
+	GetWorldTimerManager().SetTimerForNextTick(this, &AOss_TermProjectCharacter::ShowTitleScreen);
+
+	// potion bottle in the right fist (and the stick grip, shown when equipped)
 	PotionCharges = MaxPotionCharges;
-	if (USkeletalMesh* SkelMesh = GetMesh()->GetSkeletalMeshAsset())
+	if (WeaponMesh)
 	{
-		const FReferenceSkeleton& RefSkel = SkelMesh->GetRefSkeleton();
-		auto RefComponentSpace = [&RefSkel](FName Bone) -> FTransform
-		{
-			FTransform Result = FTransform::Identity;
-			for (int32 Index = RefSkel.FindBoneIndex(Bone); Index != INDEX_NONE; Index = RefSkel.GetParentIndex(Index))
-			{
-				Result = Result * RefSkel.GetRefBonePose()[Index];
-			}
-			return Result;
-		};
-
-		if (RefSkel.FindBoneIndex(TEXT("hand_r")) != INDEX_NONE && RefSkel.FindBoneIndex(TEXT("index_01_r")) != INDEX_NONE)
-		{
-			const FTransform Hand = RefComponentSpace(TEXT("hand_r"));
-			const FVector Axis = (RefComponentSpace(TEXT("index_01_r")).GetLocation() - RefComponentSpace(TEXT("pinky_01_r")).GetLocation()).GetSafeNormal();
-			const FVector Grip = FMath::Lerp(Hand.GetLocation(), RefComponentSpace(TEXT("middle_01_r")).GetLocation(), 0.6f);
-
-			// 6cm wide, 14cm tall bottle, sticking out 5cm more on the thumb side
-			const FTransform Bottle(FRotationMatrix::MakeFromZ(Axis).ToQuat(), Grip + Axis * 5.f, FVector(0.06f, 0.06f, 0.14f));
-			PotionMesh->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, TEXT("hand_r"));
-			PotionMesh->SetRelativeTransform(Bottle.GetRelativeTransform(Hand));
-		}
+		StickMesh->SetStaticMesh(WeaponMesh);
 	}
+	UpdateHandAttachments();
 	if (UMaterialInstanceDynamic* MID = PotionMesh->CreateDynamicMaterialInstance(0))
 	{
 		MID->SetVectorParameterValue(TEXT("Color"), PotionColor);
@@ -806,11 +826,13 @@ void AOss_TermProjectCharacter::ScheduleHitWindow(FVector2D Window, float AnimLe
 	TArray<FMeleeHitShape> Shapes;
 	if (bStick)
 	{
-		// the whole stick: engine cylinder is 100cm long along Z, the component's scale stretches it to StickLength
+		// the whole weapon along its local Z: the engine cylinder is 100cm long and scaled to StickLength,
+		// a weapon model is real size (origin = centre of its length)
+		const float HalfLength = WeaponMesh ? GetWeaponLength() * 0.5f : 50.f;
 		FMeleeHitShape Shape;
 		Shape.Component = StickMesh;
-		Shape.Start = FVector(0.f, 0.f, -50.f);
-		Shape.End = FVector(0.f, 0.f, 50.f);
+		Shape.Start = FVector(0.f, 0.f, -HalfLength);
+		Shape.End = FVector(0.f, 0.f, HalfLength);
 		Shape.Radius = StickHitRadius;
 		Shapes.Add(Shape);
 	}
@@ -997,7 +1019,36 @@ void AOss_TermProjectCharacter::DoToggleStick()
 		return;
 	}
 
-	// work out the grip in the reference pose, so the result doesn't depend on the current animation
+	// grip from the reference pose (also redone when the body mesh changes)
+	UpdateHandAttachments();
+
+	// wood-ish color on the engine's basic shape material (a weapon model has its own material)
+	if (!WeaponMesh)
+	{
+		if (UMaterialInstanceDynamic* MID = StickMesh->CreateDynamicMaterialInstance(0))
+		{
+			MID->SetVectorParameterValue(TEXT("Color"), StickColor);
+		}
+	}
+
+	StickMesh->SetHiddenInGame(false);
+	bStickEquipped = true;
+}
+
+float AOss_TermProjectCharacter::GetWeaponLength() const
+{
+	return WeaponMesh ? WeaponMesh->GetBounds().BoxExtent.Z * 2.f : StickLength;
+}
+
+void AOss_TermProjectCharacter::UpdateHandAttachments()
+{
+	USkeletalMesh* SkelMesh = GetMesh()->GetSkeletalMeshAsset();
+	if (!SkelMesh)
+	{
+		return;
+	}
+
+	// grips are worked out in the reference pose, so the result doesn't depend on the current animation
 	const FReferenceSkeleton& RefSkel = SkelMesh->GetRefSkeleton();
 	auto RefComponentSpace = [&RefSkel](FName Bone) -> FTransform
 	{
@@ -1008,32 +1059,91 @@ void AOss_TermProjectCharacter::DoToggleStick()
 		}
 		return Result;
 	};
-
-	const FTransform Hand = RefComponentSpace(StickBoneName);
+	if (RefSkel.FindBoneIndex(TEXT("index_01_r")) == INDEX_NONE || RefSkel.FindBoneIndex(TEXT("pinky_01_r")) == INDEX_NONE
+		|| RefSkel.FindBoneIndex(TEXT("middle_01_r")) == INDEX_NONE)
+	{
+		return;
+	}
 	const FVector Index = RefComponentSpace(TEXT("index_01_r")).GetLocation();
 	const FVector Middle = RefComponentSpace(TEXT("middle_01_r")).GetLocation();
 	const FVector Pinky = RefComponentSpace(TEXT("pinky_01_r")).GetLocation();
-
-	// the stick runs across the palm along the knuckle line (pinky -> index), gripped near its bottom end
 	const FVector Axis = (Index - Pinky).GetSafeNormal();
-	const FVector Grip = FMath::Lerp(Hand.GetLocation(), Middle, 0.6f);
-	const FVector Center = Grip + Axis * (StickLength * 0.5f - StickGripFromEnd);
 
-	// engine cylinder is 100 x 100 x 100 with its length along Z
-	const FTransform StickComponentSpace(FRotationMatrix::MakeFromZ(Axis).ToQuat(), Center,
-		FVector(StickDiameter / 100.f, StickDiameter / 100.f, StickLength / 100.f));
-
-	StickMesh->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, StickBoneName);
-	StickMesh->SetRelativeTransform(StickComponentSpace.GetRelativeTransform(Hand));
-
-	// wood-ish color on the engine's basic shape material
-	if (UMaterialInstanceDynamic* MID = StickMesh->CreateDynamicMaterialInstance(0))
+	// stick / weapon: runs across the palm along the knuckle line (pinky -> index), gripped near its bottom end
+	if (RefSkel.FindBoneIndex(StickBoneName) != INDEX_NONE)
 	{
-		MID->SetVectorParameterValue(TEXT("Color"), StickColor);
+		const FTransform Hand = RefComponentSpace(StickBoneName);
+		const FVector Grip = FMath::Lerp(Hand.GetLocation(), Middle, 0.6f);
+		const float Length = GetWeaponLength();
+		const FVector Center = Grip + Axis * (Length * 0.5f - StickGripFromEnd);
+
+		// the edge (weapon X) faces where the knuckles point from the wrist, like a sword held in a fist
+		FVector Edge = Middle - Hand.GetLocation();
+		Edge = (Edge - Axis * FVector::DotProduct(Edge, Axis)).GetSafeNormal();
+		FQuat Rotation = Edge.IsNearlyZero() ? FRotationMatrix::MakeFromZ(Axis).ToQuat() : FRotationMatrix::MakeFromZX(Axis, Edge).ToQuat();
+		Rotation = Rotation * FQuat(FVector::UpVector, FMath::DegreesToRadians(WeaponRoll));
+
+		// engine cylinder is 100 x 100 x 100 with its length along Z; a weapon model is real size
+		const FVector Scale = WeaponMesh ? FVector::OneVector : FVector(StickDiameter / 100.f, StickDiameter / 100.f, StickLength / 100.f);
+		const FTransform StickComponentSpace(Rotation, Center, Scale);
+		StickMesh->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, StickBoneName);
+		StickMesh->SetRelativeTransform(StickComponentSpace.GetRelativeTransform(Hand));
 	}
 
-	StickMesh->SetHiddenInGame(false);
-	bStickEquipped = true;
+	// potion bottle in the right fist: upright along the knuckle line, 6cm wide, 14cm tall, 5cm more on the thumb side
+	if (RefSkel.FindBoneIndex(TEXT("hand_r")) != INDEX_NONE)
+	{
+		const FTransform Hand = RefComponentSpace(TEXT("hand_r"));
+		const FVector Grip = FMath::Lerp(Hand.GetLocation(), Middle, 0.6f);
+		const FTransform Bottle(FRotationMatrix::MakeFromZ(Axis).ToQuat(), Grip + Axis * 5.f, FVector(0.06f, 0.06f, 0.14f));
+		PotionMesh->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, TEXT("hand_r"));
+		PotionMesh->SetRelativeTransform(Bottle.GetRelativeTransform(Hand));
+	}
+}
+
+void AOss_TermProjectCharacter::ChangeBodyMesh(USkeletalMesh* NewMesh, bool bWithSmoke)
+{
+	if (!NewMesh || NewMesh == GetMesh()->GetSkeletalMeshAsset() || NewMesh == PendingBodyMesh)
+	{
+		return;
+	}
+	if (GetMesh()->GetSkeletalMeshAsset() && NewMesh->GetSkeleton() != GetMesh()->GetSkeletalMeshAsset()->GetSkeleton())
+	{
+		UE_LOG(LogOss_TermProject, Warning, TEXT("'%s' Body mesh '%s' uses another skeleton (%s): the player animations would not play on it."),
+			*GetNameSafe(this), *GetNameSafe(NewMesh), *GetNameSafe(NewMesh->GetSkeleton()));
+		return;
+	}
+
+	PendingBodyMesh = NewMesh;
+	if (bWithSmoke && BodySwapDelay > 0.f)
+	{
+		// the smoke covers the body first, the new body appears inside it
+		ADeathSmoke::Burst(this);
+		GetWorldTimerManager().SetTimer(BodySwapTimer, this, &AOss_TermProjectCharacter::ApplyPendingBodyMesh, BodySwapDelay, false);
+	}
+	else
+	{
+		if (bWithSmoke)
+		{
+			ADeathSmoke::Burst(this);
+		}
+		ApplyPendingBodyMesh();
+	}
+}
+
+void AOss_TermProjectCharacter::ApplyPendingBodyMesh()
+{
+	USkeletalMesh* NewMesh = PendingBodyMesh;
+	PendingBodyMesh = nullptr;
+	if (!NewMesh)
+	{
+		return;
+	}
+	// keeps the anim instance and the current pose (same skeleton); the new mesh's own materials + physics asset
+	GetMesh()->EmptyOverrideMaterials();
+	GetMesh()->SetSkeletalMeshAsset(NewMesh);
+	UpdateHandAttachments();
+	UE_LOG(LogOss_TermProject, Log, TEXT("'%s' body mesh -> %s"), *GetNameSafe(this), *GetNameSafe(NewMesh));
 }
 
 void AOss_TermProjectCharacter::DoInteract()
@@ -1044,7 +1154,11 @@ void AOss_TermProjectCharacter::DoInteract()
 		return;
 	}
 
-	// E again at the bonfire: stand up
+	// E again at the bonfire: stand up (not while fading to the main bonfire)
+	if (bTravelling)
+	{
+		return;
+	}
 	if (bIsResting)
 	{
 		StopResting();
@@ -1400,6 +1514,9 @@ void AOss_TermProjectCharacter::HandleDeath(AActor* DamageCauser)
 	GetMesh()->SetCollisionProfileName(TEXT("Ragdoll"));
 	GetMesh()->SetSimulatePhysics(true);
 
+	// gone in a puff of white smoke (shown again in Respawn)
+	ADeathSmoke::Poof(this);
+
 	if (GEngine)
 	{
 		GEngine->AddOnScreenDebugMessage(-1, RespawnDelay, FColor::Red, TEXT("YOU DIED"), true, FVector2D(4.f, 4.f));
@@ -1446,6 +1563,7 @@ void AOss_TermProjectCharacter::Respawn()
 		AnimInstance->StopAllMontages(0.f);
 	}
 	GetCapsuleComponent()->SetCollisionEnabled(CapsuleCollision);
+	SetActorHiddenInGame(false);	// hidden by the death smoke
 
 	if (AController* PC = GetController())
 	{
@@ -1460,6 +1578,9 @@ void AOss_TermProjectCharacter::Respawn()
 	Stats->RestoreAll();
 	RefillPotions();
 	GetWorldTimerManager().ClearTimer(RestAnimTimer);
+	GetWorldTimerManager().ClearTimer(TravelTimer);
+	HideTravelMenu();
+	bTravelling = false;
 	bIsResting = false;
 	bIsStandingUp = false;
 	bSprintExhausted = false;
@@ -1630,14 +1751,396 @@ void AOss_TermProjectCharacter::StartResting(ABonfire* Bonfire)
 	Stats->RestoreAll();
 	RefillPotions();
 	AEnemyCharacter::ResetAllEnemies(this);
+
+	if (Bonfire->IsMainBonfire())
+	{
+		RegisterMainBonfire(Bonfire);
+	}
+
+	// the only place the game is saved
+	SaveAtBonfire(Bonfire);
+
+	if (CanTravelToMainBonfire())
+	{
+		ShowTravelMenu();
+	}
+}
+
+void AOss_TermProjectCharacter::SaveAtBonfire(ABonfire* Bonfire)
+{
+	USoulsSaveGame* Save = Cast<USoulsSaveGame>(UGameplayStatics::CreateSaveGameObject(USoulsSaveGame::StaticClass()));
+	if (!Save || !Bonfire)
+	{
+		return;
+	}
+	Save->Souls = Souls;
+	Save->VigorLevel = VigorLevel;
+	Save->EnduranceLevel = EnduranceLevel;
+	Save->StrengthLevel = StrengthLevel;
+	Save->BonfireName = Bonfire->GetFName();
+	Save->BonfireRespawn = Bonfire->GetRespawnTransform();
+	if (const UBossProgressSubsystem* Progress = GetWorld()->GetSubsystem<UBossProgressSubsystem>())
+	{
+		Save->DefeatedBosses = Progress->GetDefeatedBosses();
+	}
+	Save->bKnowsMainBonfire = bKnowsMainBonfire;
+	Save->MainBonfireRespawn = MainBonfireRespawn;
+	// the body the player has now (a swap still in its smoke counts already)
+	USkeletalMesh* Body = PendingBodyMesh ? PendingBodyMesh.Get() : GetMesh()->GetSkeletalMeshAsset();
+	Save->BodyMesh = FSoftObjectPath(Body);
+
+	const bool bSaved = UGameplayStatics::SaveGameToSlot(Save, USoulsSaveGame::SlotName, USoulsSaveGame::UserIndex);
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 2.f, bSaved ? FColor(255, 200, 120) : FColor::Red, bSaved ? TEXT("Game saved") : TEXT("Save failed"));
+	}
+	UE_LOG(LogOss_TermProject, Log, TEXT("Save at '%s': %s"), *GetNameSafe(Bonfire), bSaved ? TEXT("ok") : TEXT("FAILED"));
+}
+
+void AOss_TermProjectCharacter::LoadFromSave()
+{
+	const USoulsSaveGame* Save = USoulsSaveGame::Load();
+	if (!Save)
+	{
+		return;
+	}
+
+	Souls = Save->Souls;
+	VigorLevel = FMath::Max(Save->VigorLevel, 1);
+	EnduranceLevel = FMath::Max(Save->EnduranceLevel, 1);
+	StrengthLevel = FMath::Max(Save->StrengthLevel, 1);
+	Stats->SetMaxHealth(BaseMaxHealth + (VigorLevel - 1) * HealthPerVigor);
+	Stats->SetMaxStamina(BaseMaxStamina + (EnduranceLevel - 1) * StaminaPerEndurance);
+	Stats->RestoreAll();
+
+	if (Save->bKnowsMainBonfire && !bKnowsMainBonfire)
+	{
+		MainBonfireRespawn = Save->MainBonfireRespawn;
+		bKnowsMainBonfire = true;
+	}
+
+	// body mesh changed by a model swap volume (no smoke on load)
+	if (Save->BodyMesh.IsValid())
+	{
+		if (USkeletalMesh* Body = Cast<USkeletalMesh>(Save->BodyMesh.TryLoad()))
+		{
+			ChangeBodyMesh(Body, false);
+		}
+	}
+
+	// wake up in front of the saved bonfire
+	if (!Save->BonfireName.IsNone())
+	{
+		const FRotator Facing(0.f, Save->BonfireRespawn.Rotator().Yaw, 0.f);
+		TeleportTo(Save->BonfireRespawn.GetLocation(), Facing);
+		if (AController* C = GetController())
+		{
+			C->SetControlRotation(Facing);
+		}
+		// World Partition may not have streamed the ground in yet: hold still until the bonfire there has loaded
+		GetCharacterMovement()->DisableMovement();
+		PendingBonfireName = Save->BonfireName;
+		PendingBonfireTries = 0;
+		AdoptSavedBonfire();
+	}
+	UE_LOG(LogOss_TermProject, Log, TEXT("Loaded save: level %d, %d souls, bonfire %s"), GetPlayerLevel(), Souls, *Save->BonfireName.ToString());
+}
+
+void AOss_TermProjectCharacter::AdoptSavedBonfire()
+{
+	for (TActorIterator<ABonfire> It(GetWorld()); It; ++It)
+	{
+		if (It->GetFName() == PendingBonfireName)
+		{
+			LastBonfire = *It;
+			PendingBonfireName = NAME_None;
+			GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+			return;
+		}
+	}
+	// still streaming in around the player (up to ~10 s, then let go anyway)
+	if (++PendingBonfireTries < 50)
+	{
+		GetWorldTimerManager().SetTimer(PendingBonfireTimer, this, &AOss_TermProjectCharacter::AdoptSavedBonfire, 0.2f, false);
+	}
+	else
+	{
+		UE_LOG(LogOss_TermProject, Warning, TEXT("Saved bonfire '%s' not found"), *PendingBonfireName.ToString());
+		PendingBonfireName = NAME_None;
+		GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+	}
+}
+
+namespace
+{
+	/** Set by New Game: the restarted level starts playing right away */
+	bool GSkipTitleOnce = false;
+}
+
+void AOss_TermProjectCharacter::ShowTitleScreen()
+{
+	if (GSkipTitleOnce)
+	{
+		GSkipTitleOnce = false;
+		return;
+	}
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PC ? PC->GetLocalPlayer() : nullptr;
+	if (!LocalPlayer || !LocalPlayer->ViewportClient)
+	{
+		if (!PC)
+		{
+			GetWorldTimerManager().SetTimerForNextTick(this, &AOss_TermProjectCharacter::ShowTitleScreen);
+		}
+		return;
+	}
+	if (TitleScreen.IsValid())
+	{
+		return;
+	}
+
+	TitleScreen = TitleScreenWidget::Create(this, USoulsSaveGame::Load() != nullptr);
+	LocalPlayer->ViewportClient->AddViewportWidgetContent(TitleScreen.ToSharedRef(), 100);
+
+	UGameplayStatics::SetGamePaused(this, true);
+	PC->SetShowMouseCursor(true);
+	FInputModeUIOnly InputMode;
+	InputMode.SetWidgetToFocus(TitleScreen);
+	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+	PC->SetInputMode(InputMode);
+}
+
+void AOss_TermProjectCharacter::CloseTitleScreen()
+{
+	if (TitleScreen.IsValid())
+	{
+		if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+		{
+			Viewport->RemoveViewportWidgetContent(TitleScreen.ToSharedRef());
+		}
+		TitleScreen.Reset();
+	}
+	UGameplayStatics::SetGamePaused(this, false);
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		PC->SetShowMouseCursor(false);
+		PC->SetInputMode(FInputModeGameOnly());
+	}
+}
+
+void AOss_TermProjectCharacter::StartNewGame()
+{
+	const bool bHadSave = UGameplayStatics::DoesSaveGameExist(USoulsSaveGame::SlotName, USoulsSaveGame::UserIndex);
+	if (!bHadSave)
+	{
+		// nothing was loaded: this world already is a new game
+		CloseTitleScreen();
+		return;
+	}
+	UGameplayStatics::DeleteGameInSlot(USoulsSaveGame::SlotName, USoulsSaveGame::UserIndex);
+	CloseTitleScreen();
+	GSkipTitleOnce = true;
+	UGameplayStatics::OpenLevel(this, FName(*UGameplayStatics::GetCurrentLevelName(this, true)));
+}
+
+void AOss_TermProjectCharacter::QuitFromTitle()
+{
+	UKismetSystemLibrary::QuitGame(this, Cast<APlayerController>(GetController()), EQuitPreference::Quit, false);
+}
+
+void AOss_TermProjectCharacter::DeleteSave()
+{
+	const bool bDeleted = UGameplayStatics::DeleteGameInSlot(USoulsSaveGame::SlotName, USoulsSaveGame::UserIndex);
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Yellow, bDeleted ? TEXT("Save deleted (restart for a new game)") : TEXT("No save to delete"));
+	}
+}
+
+void AOss_TermProjectCharacter::RegisterMainBonfire(ABonfire* Bonfire)
+{
+	if (Bonfire)
+	{
+		MainBonfire = Bonfire;
+		MainBonfireRespawn = Bonfire->GetRespawnTransform();
+		bKnowsMainBonfire = true;
+	}
+}
+
+bool AOss_TermProjectCharacter::CanTravelToMainBonfire() const
+{
+	if (!bIsResting || bIsStandingUp || bTravelling || !bKnowsMainBonfire || Stats->IsDead())
+	{
+		return false;
+	}
+	// not when already sitting at it
+	return !LastBonfire || !LastBonfire->IsMainBonfire();
+}
+
+void AOss_TermProjectCharacter::ShowTravelMenu()
+{
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	ULocalPlayer* LocalPlayer = PC ? PC->GetLocalPlayer() : nullptr;
+	if (TravelMenu.IsValid() || !LocalPlayer || !LocalPlayer->ViewportClient)
+	{
+		return;
+	}
+
+	TWeakObjectPtr<AOss_TermProjectCharacter> WeakThis(this);
+	auto MakeText = [](const FString& Text, int32 Size, const FLinearColor& Color)
+	{
+		return SNew(STextBlock)
+			.Text(FText::FromString(Text))
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", Size))
+			.ColorAndOpacity(Color)
+			.ShadowOffset(FVector2D(1.f, 1.f));
+	};
+
+	TravelMenu = SNew(SBox)
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Bottom)
+		.Padding(FMargin(0.f, 0.f, 0.f, 140.f))
+		[
+			SNew(SOverlay)
+			+ SOverlay::Slot()
+			[
+				SNew(SImage).Image(FCoreStyle::Get().GetBrush("WhiteBrush")).ColorAndOpacity(FLinearColor(0.f, 0.f, 0.f, 0.7f))
+			]
+			+ SOverlay::Slot()
+			.Padding(FMargin(24.f, 14.f))
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(0.f, 0.f, 0.f, 10.f)
+				[
+					MakeText(TEXT("Bonfire"), 20, FLinearColor(0.95f, 0.9f, 0.75f))
+				]
+				+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+				[
+					SNew(SButton)
+					.OnClicked_Lambda([WeakThis]()
+					{
+						if (WeakThis.IsValid())
+						{
+							WeakThis->TravelToMainBonfire();
+						}
+						return FReply::Handled();
+					})
+					.ContentPadding(FMargin(24.f, 6.f))
+					[
+						MakeText(TEXT("Travel to Bonfire_Main"), 16, FLinearColor::Black)
+					]
+				]
+				+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(0.f, 10.f, 0.f, 0.f)
+				[
+					MakeText(TEXT("Stand up  [E]"), 13, FLinearColor(0.6f, 0.58f, 0.5f))
+				]
+			]
+		];
+	LocalPlayer->ViewportClient->AddViewportWidgetContent(TravelMenu.ToSharedRef(), 15);
+
+	// mouse cursor for the button; keys still reach the game (E stands up)
+	PC->SetShowMouseCursor(true);
+	FInputModeGameAndUI InputMode;
+	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+	InputMode.SetHideCursorDuringCapture(false);
+	PC->SetInputMode(InputMode);
+}
+
+void AOss_TermProjectCharacter::HideTravelMenu()
+{
+	if (!TravelMenu.IsValid())
+	{
+		return;
+	}
+	if (UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr)
+	{
+		Viewport->RemoveViewportWidgetContent(TravelMenu.ToSharedRef());
+	}
+	TravelMenu.Reset();
+
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		if (!bInLevelUpMenu)
+		{
+			PC->SetShowMouseCursor(false);
+			PC->SetInputMode(FInputModeGameOnly());
+		}
+	}
+}
+
+void AOss_TermProjectCharacter::TravelToMainBonfire()
+{
+	if (!CanTravelToMainBonfire())
+	{
+		return;
+	}
+	HideTravelMenu();
+	bTravelling = true;
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (PC && PC->PlayerCameraManager)
+	{
+		PC->PlayerCameraManager->StartCameraFade(0.f, 1.f, TravelFadeTime, FLinearColor::Black, false, true);
+	}
+	GetWorldTimerManager().SetTimer(TravelTimer, this, &AOss_TermProjectCharacter::ArriveAtMainBonfire, TravelFadeTime, false);
+}
+
+void AOss_TermProjectCharacter::ArriveAtMainBonfire()
+{
+	// the hub may have moved / streamed in since it was remembered
+	if (ABonfire* Main = MainBonfire.Get())
+	{
+		MainBonfireRespawn = Main->GetRespawnTransform();
+	}
+	const FRotator Facing(0.f, MainBonfireRespawn.Rotator().Yaw, 0.f);
+	TeleportTo(MainBonfireRespawn.GetLocation(), Facing);
+	GetCharacterMovement()->StopMovementImmediately();
+	if (AController* C = GetController())
+	{
+		C->SetControlRotation(Facing);
+	}
+
+	// keep kneeling there; it becomes the respawn point
+	TravelSearchTries = 0;
+	AdoptMainBonfire();
+
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		if (PC->PlayerCameraManager)
+		{
+			PC->PlayerCameraManager->StartCameraFade(1.f, 0.f, TravelFadeTime, FLinearColor::Black, false, false);
+		}
+	}
+	bTravelling = false;
+}
+
+void AOss_TermProjectCharacter::AdoptMainBonfire()
+{
+	ABonfire* Main = MainBonfire.Get();
+	if (!Main)
+	{
+		Main = ABonfire::FindMainBonfire(GetWorld());
+	}
+	if (Main)
+	{
+		RegisterMainBonfire(Main);
+		LastBonfire = Main;
+		return;
+	}
+	// still streaming in: look again (up to ~5 s)
+	if (++TravelSearchTries < 25)
+	{
+		GetWorldTimerManager().SetTimer(TravelTimer, this, &AOss_TermProjectCharacter::AdoptMainBonfire, 0.2f, false);
+	}
 }
 
 void AOss_TermProjectCharacter::StopResting()
 {
-	if (!bIsResting || bIsStandingUp)
+	if (!bIsResting || bIsStandingUp || bTravelling)
 	{
 		return;
 	}
+	HideTravelMenu();
 
 	// get up; still resting (can't act, not attacked) until the animation ends
 	bIsStandingUp = true;
@@ -1779,9 +2282,20 @@ void AOss_TermProjectCharacter::Tick(float DeltaSeconds)
 		}
 	}
 
-	// marker on the target's surface, on the side facing the camera
-	const FVector CameraLocation = FollowCamera->GetComponentLocation();
-	LockOnMarker->SetWorldLocation(TargetPoint + (CameraLocation - TargetPoint).GetSafeNormal() * (TargetRadius + 5.f));
+	// on-screen marker at the target's lock-on point (hidden while it is behind the camera)
+	if (ULockOnWidget* Widget = GetLockOnWidget())
+	{
+		FVector2D Screen;
+		APlayerController* PC = Cast<APlayerController>(GetController());
+		if (PC && PC->ProjectWorldLocationToScreen(TargetPoint, Screen, true))
+		{
+			Widget->ShowAt(Screen);
+		}
+		else
+		{
+			Widget->HideMarker();
+		}
+	}
 }
 
 void AOss_TermProjectCharacter::ToggleLockOn()
@@ -1796,7 +2310,10 @@ void AOss_TermProjectCharacter::ToggleLockOn()
 	if (LockOnTarget)
 	{
 		LockOnSwitchInput = 0.f;
-		LockOnMarker->SetHiddenInGame(false);
+		if (ULockOnWidget* Widget = GetLockOnWidget())
+		{
+			Widget->PlayLockPulse();
+		}
 		UpdateRotationMode();
 	}
 }
@@ -1870,6 +2387,10 @@ void AOss_TermProjectCharacter::SwitchLockOnTarget(float Direction)
 	if (Best)
 	{
 		LockOnTarget = Best;
+		if (LockOnWidget)
+		{
+			LockOnWidget->PlayLockPulse();
+		}
 	}
 }
 
@@ -1877,7 +2398,28 @@ void AOss_TermProjectCharacter::ClearLockOn()
 {
 	LockOnTarget = nullptr;
 	LockOnMarker->SetHiddenInGame(true);
+	if (LockOnWidget)
+	{
+		LockOnWidget->HideMarker();
+	}
 	UpdateRotationMode();
+}
+
+ULockOnWidget* AOss_TermProjectCharacter::GetLockOnWidget()
+{
+	if (!LockOnWidget && LockOnWidgetClass)
+	{
+		APlayerController* PC = Cast<APlayerController>(GetController());
+		if (PC && PC->IsLocalController())
+		{
+			LockOnWidget = CreateWidget<ULockOnWidget>(PC, LockOnWidgetClass);
+			if (LockOnWidget)
+			{
+				LockOnWidget->AddToViewport(15);
+			}
+		}
+	}
+	return LockOnWidget;
 }
 
 AActor* AOss_TermProjectCharacter::FindLockOnTarget() const

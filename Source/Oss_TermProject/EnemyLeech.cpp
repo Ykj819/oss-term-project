@@ -14,6 +14,7 @@
 #include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -69,9 +70,15 @@ AEnemyLeech::AEnemyLeech()
 	BodyRoot->SetupAttachment(RootComponent);
 	BodyRoot->SetRelativeLocation(FVector(0.f, 0.f, -LeechHalfHeight));
 
+	// project material (param Color): the engine shapes' default BasicShapeMaterial showed the grey grid
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> SolidMat(TEXT("/Game/Characters/Enemies/Materials/M_EnemySolid.M_EnemySolid"));
 	auto MakePart = [&](const TCHAR* Name)
 	{
 		UStaticMeshComponent* Part = CreateDefaultSubobject<UStaticMeshComponent>(Name);
+		if (SolidMat.Succeeded())
+		{
+			Part->SetMaterial(0, SolidMat.Object);
+		}
 		Part->SetupAttachment(BodyRoot);
 		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Part->SetGenerateOverlapEvents(false);

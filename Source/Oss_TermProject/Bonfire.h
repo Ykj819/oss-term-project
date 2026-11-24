@@ -1,4 +1,5 @@
-// Bonfire (rest point): interact (E) to restore health, stamina and potions. Temporary look: a glowing box
+// Bonfire (rest point): interact (E) to restore health, stamina and potions. Look: SM_Bonfire + SM_BonfireFlame
+// (Export/Blender/scripts/props/gen_bonfire.py, Tools/import_bonfire.py)
 
 #pragma once
 
@@ -15,9 +16,13 @@ class ABonfire : public AActor, public IInteractable
 {
 	GENERATED_BODY()
 
-	/** Placeholder body (box) */
+	/** Stone ring + logs (SM_Bonfire, with collision) */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	UStaticMeshComponent* Body;
+
+	/** Flame (SM_BonfireFlame, M_BonfireFlame: additive, flickers and sways by itself) */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	UStaticMeshComponent* Flame;
 
 	/** Fire glow */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
@@ -41,21 +46,31 @@ public:
 	UFUNCTION(BlueprintPure, Category="Bonfire")
 	FTransform GetRespawnTransform() const;
 
+	/** The hub bonfire other bonfires can travel to: actor tag "Bonfire_Main" or (editor / PIE) label Bonfire_Main */
+	bool IsMainBonfire() const;
+
+	/** First loaded bonfire that IsMainBonfire (null if none / streamed out) */
+	static ABonfire* FindMainBonfire(const UWorld* World);
+
 protected:
 
 	virtual void BeginPlay() override;
 
 	virtual void OnConstruction(const FTransform& Transform) override;
 
-	/** Box size */
+	/** Footprint used for the respawn spot (the bonfire mesh is ~150 x 150 cm, flame ~120 cm high) */
 	UPROPERTY(EditAnywhere, Category="Bonfire", meta = (Units = "cm"))
-	FVector Size = FVector(60.f, 60.f, 60.f);
+	FVector Size = FVector(150.f, 150.f, 80.f);
+
+	/** Flame brightness (material parameter "Glow"); scaled with the light while resting / focused */
+	UPROPERTY(EditAnywhere, Category="Bonfire", meta = (ClampMin = 0))
+	float FlameGlow = 12.f;
 
 	/** Respawn spot distance from the bonfire, along its forward (red arrow / +X) direction */
 	UPROPERTY(EditAnywhere, Category="Bonfire", meta = (ClampMin = 0, Units = "cm"))
 	float RespawnDistance = 150.f;
 
-	/** Box color */
+	/** Light color */
 	UPROPERTY(EditAnywhere, Category="Bonfire")
 	FLinearColor Color = FLinearColor(1.f, 0.35f, 0.02f);
 
@@ -74,7 +89,10 @@ protected:
 	float RestFlashDuration = 0.6f;
 
 	UPROPERTY(Transient)
-	TObjectPtr<class UMaterialInstanceDynamic> BodyMaterial;
+	TObjectPtr<class UMaterialInstanceDynamic> FlameMaterial;
+
+	/** Light intensity and flame glow together (flame follows the light's ratio to GlowIntensity) */
+	void SetFireIntensity(float LightIntensity);
 
 	bool bFocused = false;
 

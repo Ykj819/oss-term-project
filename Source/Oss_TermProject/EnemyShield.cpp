@@ -1,4 +1,4 @@
-// Shield enemy: carries a big box shield, its only attack is a short shield rush; stands still for a while after each rush (the opening)
+// Shield enemy (plush bear, darker): holds an iron tower shield in both hands, its only attack is a short shield rush; stands still for a while after each rush (the opening)
 
 #include "EnemyShield.h"
 #include "StatsComponent.h"
@@ -8,6 +8,9 @@
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimSequenceBase.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -24,9 +27,20 @@ AEnemyShield::AEnemyShield()
 	bFlinchOnHit = false;
 
 	bTintBody = true;
-	BodyTint = FLinearColor(0.3f, 0.32f, 0.38f);
+	BodyTint = FLinearColor(0.5f, 0.45f, 0.42f);	// same plush bear, darker
 
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> ShieldMesh(TEXT("/Game/Characters/Enemies/Meshes/SM_EnemyShield.SM_EnemyShield"));
+	const FString ShieldAnimDir = TEXT("/Game/Characters/Mannequins/Anims/Shield/");
+	auto ShieldAnim = [&ShieldAnimDir](const TCHAR* Name)
+	{
+		return TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(ShieldAnimDir + Name + TEXT(".") + Name));
+	};
+	HoldAnim = ShieldAnim(TEXT("MM_Shield_Hold"));
+	BraceAnim = ShieldAnim(TEXT("MM_Shield_Brace"));
+	PushAnim = ShieldAnim(TEXT("MM_Shield_Push"));
+	// no fist attacks / hit react: the arms stay on the shield
+	AttackAnimations.Reset();
+	HeavyAttackAnimation.Reset();
 
 	// held in front of the chest, follows the body's facing
 	Shield = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Shield"));
@@ -34,11 +48,11 @@ AEnemyShield::AEnemyShield()
 	Shield->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Shield->SetGenerateOverlapEvents(false);
 	Shield->SetCanEverAffectNavigation(false);
-	Shield->SetRelativeLocation(FVector(ShieldForward.X, 0.f, ShieldHeight));
-	Shield->SetRelativeScale3D(ShieldSize / 100.f);
-	if (CubeMesh.Succeeded())
+	Shield->SetRelativeLocation(FVector(ShieldForward.X, 0.f, ShieldLift.X));
+	Shield->SetRelativeScale3D(ShieldSize / FVector(10.f, 80.f, 110.f));
+	if (ShieldMesh.Succeeded())
 	{
-		Shield->SetStaticMesh(CubeMesh.Object);
+		Shield->SetStaticMesh(ShieldMesh.Object);
 	}
 }
 
@@ -55,12 +69,34 @@ void AEnemyShield::BeginPlay()
 	AttackRange = ChargeStartRange;
 	SavedMaxAcceleration = GetCharacterMovement()->MaxAcceleration;
 
-	Shield->SetRelativeLocation(FVector(ShieldForward.X, 0.f, ShieldHeight));
-	Shield->SetRelativeScale3D(ShieldSize / 100.f);
+	Shield->SetRelativeLocation(FVector(ShieldForward.X, 0.f, ShieldLift.X));
+	Shield->SetRelativeScale3D(ShieldSize / FVector(10.f, 80.f, 110.f));
 	ShieldMID = Shield->CreateDynamicMaterialInstance(0);
 	if (ShieldMID)
 	{
 		ShieldMID->SetVectorParameterValue(TEXT("Color"), ShieldColor);
+	}
+
+	for (TSoftObjectPtr<UAnimSequenceBase>* Anim : { &HoldAnim, &BraceAnim, &PushAnim })
+	{
+		Anim->LoadSynchronous();
+	}
+	PlayShieldPose(HoldAnim, 0.f);
+}
+
+void AEnemyShield::ResetEnemy()
+{
+	Super::ResetEnemy();
+	PlayShieldPose(HoldAnim, 0.f);	// the reset stopped every montage
+}
+
+void AEnemyShield::PlayShieldPose(const TSoftObjectPtr<UAnimSequenceBase>& Anim, float BlendTime)
+{
+	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
+	UAnimSequenceBase* Sequence = Anim.Get();
+	if (AnimInstance && Sequence)
+	{
+		AnimInstance->PlaySlotAnimationAsDynamicMontage(Sequence, HoldSlotName, BlendTime, BlendTime, 1.f, 100000);
 	}
 }
 
@@ -80,11 +116,13 @@ float AEnemyShield::TakeDamage(float DamageAmount, FDamageEvent const& DamageEve
 			if (ShieldMID)
 			{
 				ShieldMID->SetVectorParameterValue(TEXT("Color"), BlockFlashColor);
+				ShieldMID->SetScalarParameterValue(TEXT("Flash"), BlockFlashGlow);
 				GetWorldTimerManager().SetTimer(BlockFlashTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
 				{
 					if (ShieldMID)
 					{
 						ShieldMID->SetVectorParameterValue(TEXT("Color"), ShieldColor);
+						ShieldMID->SetScalarParameterValue(TEXT("Flash"), 0.f);
 					}
 				}), 0.12f, false);
 			}
@@ -99,19 +137,20 @@ void AEnemyShield::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	// shield slides back during the wind-up and out during the rush
-	float TargetX = ShieldForward.X;
+	// shield follows the hands: pulled in during the wind-up (MM_Shield_Brace), shoved out in the rush (MM_Shield_Push)
+	FVector2D Target(ShieldForward.X, ShieldLift.X);
 	if (Phase == EShieldChargePhase::WindUp)
 	{
-		TargetX = ShieldForward.Y;
+		Target = FVector2D(ShieldForward.Y, ShieldLift.Y);
 	}
 	else if (Phase == EShieldChargePhase::Dash)
 	{
-		TargetX = ShieldForward.Z;
+		Target = FVector2D(ShieldForward.Z, ShieldLift.Z);
 	}
 	const FVector Current = Shield->GetRelativeLocation();
-	const float Speed = Phase == EShieldChargePhase::WindUp ? 6.f : 20.f;
-	Shield->SetRelativeLocation(FVector(FMath::FInterpTo(Current.X, TargetX, DeltaSeconds, Speed), 0.f, ShieldHeight));
+	const float Speed = Phase == EShieldChargePhase::Dash ? 20.f : 7.f;
+	Shield->SetRelativeLocation(FVector(FMath::FInterpTo(Current.X, Target.X, DeltaSeconds, Speed), 0.f,
+		FMath::FInterpTo(Current.Z, Target.Y, DeltaSeconds, Speed)));
 
 	// the rush keeps going even if the player drops out of sight mid-dash
 	if (Phase == EShieldChargePhase::Dash && State != EEnemyState::Dead)
@@ -169,6 +208,8 @@ void AEnemyShield::StartWindUp()
 	Movement->StopMovementImmediately();
 	Movement->bOrientRotationToMovement = false;
 
+	PlayShieldPose(BraceAnim, 0.3f);
+
 	GetWorldTimerManager().SetTimer(PhaseTimer, this, &AEnemyShield::StartDash, FMath::Max(WindUpTime, 0.05f), false);
 }
 
@@ -185,6 +226,7 @@ void AEnemyShield::StartDash()
 	Movement->MaxWalkSpeed = DashSpeed;
 	Movement->MaxAcceleration = 100000.f;
 	Movement->Velocity = DashDirection * DashSpeed;
+	PlayShieldPose(PushAnim, 0.08f);
 
 	// the shield face is the hitbox (segment along its height, sphere wide enough to cover its width)
 	FMeleeHitShape Shape;
@@ -205,6 +247,7 @@ void AEnemyShield::StartDash()
 void AEnemyShield::StartRecover()
 {
 	Phase = EShieldChargePhase::Recover;
+	PlayShieldPose(HoldAnim, 0.4f);
 
 	if (UMeleeHitComponent* Hit = FindComponentByClass<UMeleeHitComponent>())
 	{
@@ -247,4 +290,5 @@ void AEnemyShield::CancelAttack()
 	GetWorldTimerManager().ClearTimer(PhaseTimer);
 	Phase = EShieldChargePhase::None;
 	RestoreMovement();
+	PlayShieldPose(HoldAnim, 0.2f);
 }
